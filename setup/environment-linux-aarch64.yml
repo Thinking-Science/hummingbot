@@ -20,7 +20,6 @@ dependencies:
   - pytables=3.6.1
   - python=3.8.2
   - python-dateutil=2.8.1
-  - scikit-learn=0.24.1
   - scipy=1.6.2
   - six=1.14.0
   - sqlalchemy=1.4
@@ -71,6 +70,7 @@ dependencies:
     - requests==2.22.0
     - rsa==4.7
     - ruamel-yaml==0.16.10
+    - scikit-learn
     - setuptools==50.3.2
     - signalr-client-aio==0.0.1.6.2
     - simplejson==3.17.2

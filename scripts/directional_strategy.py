@@ -121,11 +121,11 @@ class SignalFactory:
                 target = features.close.pct_change().ewm(span=100).std().iat[-1] * width
                 signal = Signal(
                     id=str(random.randint(1, 1e10)),
-                    value=value,
+                    value=Decimal(str(value)),
                     position_config=PositionConfig(
                         timestamp=datetime.datetime.now().timestamp(),
-                        stop_loss=target,
-                        take_profit=target,
+                        stop_loss=Decimal(target),
+                        take_profit=Decimal(target),
                         time_limit=60,
                         order_type=OrderType.MARKET,
                         amount=Decimal(1),
@@ -141,13 +141,13 @@ class SignalFactory:
 class DirectionalStrategyPerpetuals(ScriptStrategyBase):
     bot_profile = BotProfile(
         balance_limit=Decimal(1000),
-        max_order_amount=Decimal(30),
+        max_order_amount=Decimal(20),
         long_threshold=0.5,
         short_threshold=-0.5,
         leverage=10,
     )
     max_executors_by_connector_trading_pair = 1
-    trading_pairs = ["ETH-USDT", "BTC-USDT"]
+    trading_pairs = ["ETH-BUSD"]
     exchange = "binance_perpetual_testnet"
     set_leverage_flag = None
     signal_executors: Dict[str, PositionExecutor] = {}
