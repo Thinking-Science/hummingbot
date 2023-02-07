@@ -85,19 +85,16 @@ RUN groupadd -g 8211 hummingbot && \
 # Create sym links
 RUN ln -s /conf /home/hummingbot/conf && \
   ln -s /logs /home/hummingbot/logs && \
+  ln -s /certs /home/hummingbot/certs && \
+  ln -s /models /home/hummingbot/models && \
   ln -s /data /home/hummingbot/data && \
   ln -s /pmm_scripts /home/hummingbot/pmm_scripts && \
   ln -s /scripts /home/hummingbot/scripts
 
 # Create mount points
-RUN mkdir -p /conf /logs /data /pmm_scripts /scripts \
-    /gateway-conf \
-    /home/hummingbot/.hummingbot-gateway/certs && \
-  chown -R hummingbot:hummingbot /conf /logs /data /pmm_scripts /scripts /gateway-conf \
-    /home/hummingbot/.hummingbot-gateway
-VOLUME /conf /logs /data /pmm_scripts /scripts \
-  /gateway-conf \
-  /home/hummingbot/.hummingbot-gateway/certs
+RUN mkdir -p /conf /logs /data /pmm_scripts /scripts /gateway-conf /certs && \
+  chown -R hummingbot:hummingbot /conf /logs /data /pmm_scripts /scripts /gateway-conf /certs
+VOLUME /conf /logs /data /pmm_scripts /scripts /gateway-conf /certs
 
 # Pre-populate pmm_scripts/ volume with default pmm_scripts
 COPY --chown=hummingbot:hummingbot pmm_scripts/ pmm_scripts/
