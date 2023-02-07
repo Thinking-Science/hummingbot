@@ -74,30 +74,30 @@ class SignalFactory:
                 for connector_name, trading_pairs_features in self.features_df().items()}
 
     def get_signals(self):
-        if self.all_data_sources_ready:
-            signals = self.current_features().copy()
-            for connector_name, trading_pairs_features in signals.items():
-                for trading_pair, features in trading_pairs_features.items():
+        signals = self.current_features().copy()
+        for connector_name, trading_pairs_features in signals.items():
+            for trading_pair, features in trading_pairs_features.items():
+                if "RSI_14" in features.columns:
                     value = (features["RSI_14"] - 50) / 50
-                    signal = Signal(
-                        id=str(random.randint(1, 1e10)),
-                        value=value,
-                        position_config=PositionConfig(
-                            timestamp=datetime.datetime.now().timestamp(),
-                            stop_loss=Decimal(0.0005),
-                            take_profit=Decimal(0.006),
-                            time_limit=60,
-                            order_type=OrderType.MARKET,
-                            amount=Decimal(1),
-                            side=PositionSide.LONG if value < 0 else PositionSide.SHORT,
-                            trading_pair=trading_pair,
-                            exchange=connector_name,
-                        ),
-                    )
-                    signals[connector_name][trading_pair] = signal
-                    return signals
-        else:
-            return None
+                else:
+                    value = 0
+                signal = Signal(
+                    id=str(random.randint(1, 1e10)),
+                    value=value,
+                    position_config=PositionConfig(
+                        timestamp=datetime.datetime.now().timestamp(),
+                        stop_loss=Decimal(0.0005),
+                        take_profit=Decimal(0.006),
+                        time_limit=60,
+                        order_type=OrderType.MARKET,
+                        amount=Decimal(1),
+                        side=PositionSide.LONG if value < 0 else PositionSide.SHORT,
+                        trading_pair=trading_pair,
+                        exchange=connector_name,
+                    ),
+                )
+                signals[connector_name][trading_pair] = signal
+        return signals
 
 
 class DirectionalStrategyPerpetuals(ScriptStrategyBase):
