@@ -1,4 +1,5 @@
 import datetime
+import pickle
 import random
 from decimal import Decimal
 from typing import Dict, List
@@ -10,8 +11,10 @@ from pydantic import BaseModel
 
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.connector.derivative.position import PositionSide
+from hummingbot.connector.markets_recorder import MarketsRecorder
 from hummingbot.core.data_type.common import OrderType, PositionMode
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory
+from hummingbot.features.features import Features
 from hummingbot.smart_components.position_executor.data_types import PositionConfig
 from hummingbot.smart_components.position_executor.position_executor import PositionExecutor
 from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
@@ -32,14 +35,42 @@ class BotProfile(BaseModel):
 
 
 class SignalFactory:
-    def __init__(self, max_records: int, connectors: Dict[str, ConnectorBase], interval: str = "1m"):
+    def __init__(self, max_records: int, connectors: Dict[str, ConnectorBase], interval: str = "1m", features=Features()):
         self.connectors = connectors
+        self.model = pickle.load(open('models/pipeline.pkl', 'rb'))
         self.candles = {
             connector_name: {trading_pair: CandlesFactory.get_candle(connector="binance_spot",
                                                                      trading_pair=trading_pair,
                                                                      interval=interval, max_records=max_records)
                              for trading_pair in connector.trading_pairs} for
             connector_name, connector in self.connectors.items()}
+        self.features_dict = {
+            'crossover': {
+                'rsi': [
+                    {'upper_thold': 70, 'upper_side': 'SHORT', 'down_thold': 30, 'down_side': 'LONG',
+                     'config': {'length': 14}},
+                    {'upper_thold': 65, 'upper_side': 'SHORT', 'down_thold': 35, 'down_side': 'LONG',
+                     'config': {'length': 21}},
+                    {'upper_thold': 60, 'upper_side': 'SHORT', 'down_thold': 40, 'down_side': 'LONG',
+                     'config': {'length': 28}},
+                ],
+                'bbands': [
+                    {'upper_side': 'SHORT', 'down_side': 'LONG', 'config': {'length': 20}},
+                    {'upper_side': 'SHORT', 'down_side': 'LONG', 'config': {'length': 30, 'mamode': 't3'}},
+                ]
+            },
+            'intersection': {
+                'macd': [
+                    {'series1_breakup_side': 'LONG', 'series2_breakup_side': 'SHORT',
+                     'config': {"fast": 12, "slow": 26, "signal": 9}},
+                    {'series1_breakup_side': 'LONG', 'series2_breakup_side': 'SHORT',
+                     'config': {"fast": 15, "slow": 30, "signal": 12}},
+                    {'series1_breakup_side': 'LONG', 'series2_breakup_side': 'SHORT',
+                     'config': {"fast": 18, "slow": 34, "signal": 15}},
+                ]
+            }
+        }
+        self.features = features
 
     def start(self):
         for connector_name, trading_pairs_candles in self.candles.items():
@@ -64,12 +95,12 @@ class SignalFactory:
     def features_df(self):
         candles_df = self.candles_df().copy()
         for connector_name, trading_pairs_candles in candles_df.items():
-            for trading_pair, candles in trading_pairs_candles.items():
-                candles.ta.rsi(length=14, append=True)
+            for trading_pair, df in trading_pairs_candles.items():
+                df = self.features.add_features(df, self.features_dict, dropna=True)
         return candles_df
 
     def current_features(self):
-        return {connector_name: {trading_pair: features.iloc[-1, :].to_dict() for trading_pair, features in
+        return {connector_name: {trading_pair: features.iloc[-2:, :] for trading_pair, features in
                                  trading_pairs_features.items()}
                 for connector_name, trading_pairs_features in self.features_df().items()}
 
@@ -77,21 +108,28 @@ class SignalFactory:
         signals = self.current_features().copy()
         for connector_name, trading_pairs_features in signals.items():
             for trading_pair, features in trading_pairs_features.items():
-                if "RSI_14" in features.columns:
-                    value = (features["RSI_14"] - 50) / 50
-                else:
+                # features = pd.DataFrame.from_dict(features)
+                predict = self.model.predict(features)[-1]
+                predict_proba = self.model.predict_proba(features).max()
+                if predict == 0:
                     value = 0
+                elif predict == 1:
+                    value = predict_proba
+                else:
+                    value = -predict_proba
+                width = 0.5
+                target = features.close.pct_change().ewm(span=100).std().iat[-1] * width
                 signal = Signal(
                     id=str(random.randint(1, 1e10)),
                     value=value,
                     position_config=PositionConfig(
                         timestamp=datetime.datetime.now().timestamp(),
-                        stop_loss=Decimal(0.0005),
-                        take_profit=Decimal(0.006),
+                        stop_loss=target,
+                        take_profit=target,
                         time_limit=60,
                         order_type=OrderType.MARKET,
                         amount=Decimal(1),
-                        side=PositionSide.LONG if value < 0 else PositionSide.SHORT,
+                        side=PositionSide.LONG if value > 0 else PositionSide.SHORT,
                         trading_pair=trading_pair,
                         exchange=connector_name,
                     ),
@@ -177,8 +215,29 @@ class DirectionalStrategyPerpetuals(ScriptStrategyBase):
         self.store_executors()
 
     def store_executors(self):
-        # TODO: add options to store in database or csv.
-        pass
+        executors_to_store = {signal_id: executor for signal_id, executor in self.get_closed_executors().items()
+                              if signal_id not in self.stored_executors}
+        for signal_id, executor in executors_to_store.items():
+            signal = {
+                "id": signal_id,
+                "timestamp": int(executor.timestamp),
+                "close_timestamp": int(executor.close_timestamp),
+                "sl": executor.position_config.stop_loss,
+                "tp": executor.position_config.take_profit,
+                "tl": executor.position_config.time_limit,
+                "exchange": executor.exchange,
+                "trading_pair": executor.trading_pair,
+                "side": executor.side.name,
+                "last_status": executor.status.name,
+                "order_type": executor.position_config.order_type.name,
+                "amount": executor.amount,
+                "entry_price": executor.entry_price,
+                "close_price": executor.close_price,
+                "pnl": executor.pnl,
+                "leverage": self.bot_profile.leverage,
+            }
+            MarketsRecorder.get_instance().add_closed_signal(signal)
+            self.stored_executors.append(signal_id)
 
     def format_status(self) -> str:
         """
