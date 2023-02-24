@@ -279,7 +279,7 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
                              position_action=PositionAction.CLOSE)
 
     def is_margin_enough(self, betting_amount):
-        quote_balance = self.connectors[self.exchange].get_available_balance(self.trading_pair.split("-")[-1])
+        quote_balance = self.connectors[self.exchange].get_balance(self.trading_pair.split("-")[-1])
         if betting_amount * Decimal("1.01") < quote_balance * Decimal(str(self.leverage)):
             return True
         else:
