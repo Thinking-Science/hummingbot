@@ -39,10 +39,11 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
     # Configure the parameters for the position
     taker_fee = 0.0003
     maker_fee = 0.00012
-    total_fee = taker_fee + maker_fee
+    total_fee = taker_fee * 2
     take_profit = 0.007
     stop_loss = 0.002
     time_limit = 60 * 30
+    real_take_profit = take_profit - taker_fee - maker_fee
 
     short_threshold = -0.5
     long_threshold = 0.5
@@ -63,7 +64,7 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
     }
 
     # Configure the leverage and order amount the bot is going to use
-    set_leverage_flag = None
+    set_leverage_flag = True
     leverage = 15
     initial_order_amount_usd = Decimal("10")
     order_amount_usd = Decimal("10")
@@ -302,5 +303,5 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
             elif executor.status in [PositionExecutorStatus.CLOSED_BY_STOP_LOSS,
                                      PositionExecutorStatus.CLOSED_BY_TIME_LIMIT]:
                 net_loss_usd += (Decimal(str(executor.pnl)) * executor.amount) - (executor.amount * Decimal(str(self.total_fee)))
-        amount = self.initial_order_amount_usd - min(Decimal("0"), (net_loss_usd / Decimal(self.take_profit)))
+        amount = self.initial_order_amount_usd - min(Decimal("0"), (net_loss_usd / Decimal(self.real_take_profit)))
         return amount
