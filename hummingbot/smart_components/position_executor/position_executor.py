@@ -104,7 +104,10 @@ class PositionExecutor:
 
     @property
     def amount(self):
-        return self.position_config.amount
+        if self.open_order.executed_amount_base == Decimal("0"):
+            return self.position_config.amount
+        else:
+            return self.open_order.executed_amount_base
 
     @property
     def entry_price(self):
