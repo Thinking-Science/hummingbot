@@ -64,7 +64,7 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
     }
 
     # Configure the leverage and order amount the bot is going to use
-    set_leverage_flag = True
+    set_leverage_flag = None
     leverage = 15
     initial_order_amount_usd = Decimal("10")
     order_amount_usd = Decimal("10")
@@ -280,7 +280,7 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
                              position_action=PositionAction.CLOSE)
 
     def is_margin_enough(self, betting_amount):
-        quote_balance = self.connectors[self.exchange].get_available_balance(self.trading_pair.split("-")[-1])
+        quote_balance = self.connectors[self.exchange].get_balance(self.trading_pair.split("-")[-1])
         if betting_amount * Decimal("1.01") < quote_balance * Decimal(str(self.leverage)):
             return True
         else:
@@ -300,8 +300,16 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
         for executor in reversed(self.get_closed_executors()):
             if executor.status == PositionExecutorStatus.CLOSED_BY_TAKE_PROFIT:
                 break
-            elif executor.status in [PositionExecutorStatus.CLOSED_BY_STOP_LOSS,
-                                     PositionExecutorStatus.CLOSED_BY_TIME_LIMIT]:
-                net_loss_usd += (Decimal(str(executor.pnl)) * executor.amount) - (executor.amount * Decimal(str(self.total_fee)))
-        amount = self.initial_order_amount_usd - min(Decimal("0"), (net_loss_usd / Decimal(self.real_take_profit)))
+            else:
+                if executor.status == PositionExecutorStatus.CLOSED_BY_STOP_LOSS:
+                    exit_fee = executor.stop_loss_order.executed_amount_base * Decimal(str(self.taker_fee))
+                elif executor.status == PositionExecutorStatus.CLOSED_BY_TIME_LIMIT:
+                    exit_fee = executor.time_limit_order.executed_amount_base * Decimal(str(self.taker_fee))
+                enter_fee = (executor.amount * Decimal(str(self.taker_fee)))
+                realized_pnl = Decimal(str(executor.pnl)) * executor.amount
+                net_loss_usd += (realized_pnl - enter_fee - exit_fee) * executor.entry_price
+
+        amount = self.initial_order_amount_usd - net_loss_usd / Decimal(self.real_take_profit)
+        self.logger().info(f'net_loss_usd: {net_loss_usd}')
+        self.logger().info(f'Amount based in net_loss_usd: {amount}')
         return amount
