@@ -12,8 +12,8 @@ def trend_follower_with_bb_and_macd_filters(df: pd.DataFrame):
     m_21 = last_row["BBM_21_2.0"]
     macd = last_row["MACDh_12_26_9"]
     price = last_row["close"]
-    take_profit = last_row["std_close"] * 2
-    stop_loss = last_row["std_close"] * 1.25
+    take_profit = last_row["std_close"] * 1
+    stop_loss = last_row["std_close"] * 0.5
     signal = 0
     if price > m_21 and bbp < 0.9 and macd > 0:
         signal = 1
