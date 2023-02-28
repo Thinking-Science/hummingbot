@@ -48,7 +48,7 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
     total_fee = taker_fee * 2
     take_profit = 0.007
     stop_loss = 0.002
-    time_limit = 60 * 30
+    time_limit = 60 * 10  # 10 minutes
 
     short_threshold = -0.5
     long_threshold = 0.5
@@ -195,11 +195,11 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
         if self.all_candles_ready:
             lines.extend([
                 "\n############################################ Market Data ############################################\n"])
-            trades_to_filter = [3, 10, 100, 1000, 5000, 10000, 20000]
+            trades_to_filter = [25, 50, 100, 250, 500, 1000, 5000, 10000, 20000]
             for n_trades in trades_to_filter:
                 if len(self.trades_buffer) > n_trades:
                     buy_volume, sell_volume, net_volume = self.get_volume_of_last_trades(n_trades)
-                    lines.extend([f"""Trades: {n_trades}| Sell:{sell_volume:.1f} | Buy: {buy_volume:.1f} | Total: {net_volume:.1f} |"""])
+                    lines.extend([f"""Sell:{sell_volume:.1f} | Buy: {buy_volume:.1f} | Net: {net_volume:.1f} | Trades: {n_trades}| """])
             buy_volume, sell_volume, net_volume = self.get_volume_of_last_trades(len(self.trades_buffer))
             lines.extend([f"All Trades {len(self.trades_buffer)} | Sell:{sell_volume:.1f} | Buy: {buy_volume:.1f} | Total: {net_volume:.1f} |"])
             columns_to_show = ["timestamp", "open", "low", "high", "close", "volume", "BBP_21_2.0", "BBM_21_2.0", "MACDh_12_26_9", "std", "take_profit", "stop_loss"]
@@ -347,7 +347,8 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
         if ball_number == 1:
             self.executor_group_id += 1
         self.ball_number = ball_number
-        amount = self.initial_order_amount_usd - net_loss_usd / Decimal(take_profit)
+        extra_amount = - net_loss_usd / Decimal(take_profit) if net_loss_usd < Decimal("0") else Decimal("0")
+        amount = self.initial_order_amount_usd + extra_amount
         self.logger().info(f"Ball number: {ball_number}")
         self.logger().info(f'Net_loss_usd: {net_loss_usd}')
         self.logger().info(f'Amount based in net_loss_usd: {amount}')
