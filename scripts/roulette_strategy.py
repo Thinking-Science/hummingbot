@@ -46,8 +46,7 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
     taker_fee = 0.0003
     maker_fee = 0.00012
     total_fee = taker_fee * 2
-    take_profit = 0.007
-    stop_loss = 0.002
+    min_stop_loss = 0.001
     time_limit = 60 * 10  # 10 minutes
 
     short_threshold = -0.5
@@ -108,7 +107,7 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
         self.check_and_set_leverage()
         if len(self.get_active_executors()) < self.max_executors and self.all_candles_ready:
             signal, take_profit, stop_loss = self.get_signal()
-            if signal < self.short_threshold or signal > self.long_threshold:
+            if (signal < self.short_threshold or signal > self.long_threshold) and stop_loss > self.min_stop_loss:
                 self.logger().info(f"Signal: {signal:.2f}, take_profit: {take_profit:.2f}, stop_loss: {stop_loss:.2f}")
                 bet = self.get_roulette_amount(take_profit)
                 if not self.is_margin_enough(betting_amount=bet):
