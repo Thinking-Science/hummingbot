@@ -44,8 +44,8 @@ class RouletteStrategy(ScriptStrategyBase):
     total_fee = taker_fee * 2
 
     # Configure the parameters for the position
-    stop_loss_multiplier = 0.75
-    take_profit_multiplier = 1.5
+    stop_loss_multiplier = 0.5
+    take_profit_multiplier = 1
     time_limit = 60 * 55
 
     short_threshold = -0.5
@@ -53,7 +53,7 @@ class RouletteStrategy(ScriptStrategyBase):
 
     candles = CandlesFactory.get_candle(connector=exchange,
                                         trading_pair=trading_pair,
-                                        interval="3m", max_records=500)
+                                        interval="1m", max_records=500)
 
     # Configure the leverage and order amount the bot is going to use
     set_leverage_flag = None
@@ -61,9 +61,7 @@ class RouletteStrategy(ScriptStrategyBase):
 
     # Roulette amount configuration
     initial_order_amount_usd = Decimal("6")
-    roulette_group_id = 1
-    initial_order_amount_usd = Decimal("6")
-    executor_group_id = 1
+    roulette_group_id = 0
     ball_number = 1
 
     today = datetime.datetime.today()
@@ -136,15 +134,25 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         candles_df.ta.bbands(length=100, append=True)
         candles_df.ta.macd(fast=21, slow=42, signal=9, append=True)
         candles_df["std"] = candles_df["close"].rolling(100).std()
+        candles_df["mean"] = candles_df["close"].rolling(100).mean()
         candles_df["std_close"] = candles_df["std"] / candles_df["close"]
         last_candle = candles_df.iloc[-1]
         bbp = last_candle["BBP_100_2.0"]
         macdh = last_candle["MACDh_21_42_9"]
         macd = last_candle["MACD_21_42_9"]
+        mean = last_candle["mean"]
+        price = last_candle["close"]
         std_pct = last_candle["std_close"]
-        if bbp < 0.2 and macdh > 0 and macd < 0:
+        # if bbp < 0.2 and macdh > 0 and macd < 0:
+        #     signal_value = 1
+        # elif bbp > 0.8 and macdh < 0 and macd > 0:
+        #     signal_value = -1
+        # else:
+        #     signal_value = 0
+
+        if price > mean and bbp < 0.7:
             signal_value = 1
-        elif bbp > 0.8 and macdh < 0 and macd > 0:
+        elif price < mean and bbp > 0.3:
             signal_value = -1
         else:
             signal_value = 0
@@ -158,7 +166,8 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         for executor in self.get_closed_executors():
             if executor.roulette_group_id not in roulette_by_group_id:
                 roulette_by_group_id[executor.roulette_group_id] = [executor]
-            roulette_by_group_id[executor.roulette_group_id].append(executor)
+            else:
+                roulette_by_group_id[executor.roulette_group_id].append(executor)
         return roulette_by_group_id
 
     def calculate_roulette_stats(self):
@@ -191,7 +200,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         fees_cum_usd = 0
 
         if len(self.stored_executors) > 0:
-            lines.extend(["\n########### Roulette Stats ###########"])
+            lines.extend(["\n###### Roulette Stats ######"])
             for roulette_id, stats in self.calculate_roulette_stats().items():
                 lines.extend([f"""
 | Roulette id: {roulette_id} | Ball numbers: {stats['ball_numbers']} |
@@ -202,7 +211,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
             pnl_usd += executor.pnl_usd
             fees_cum_usd += executor.cum_fees
         if len(self.active_executors) > 0:
-            lines.extend(["\n########### Active Executors ###########"])
+            lines.extend(["\n###### Active Executors ######"])
             for executor in self.active_executors:
                 lines.extend([f"|Signal id: {executor.timestamp} | Signal value: {executor.signal_value:.2f} | Ball number: {executor.ball_number} |"])
                 lines.extend(executor.to_format_status())
@@ -212,7 +221,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         lines.extend([f"\n| PNL USD: {pnl_usd:.4f} | Fees cum USD: {fees_cum_usd:.4f} | Net result: {(pnl_usd - fees_cum_usd):.4f} |"])
 
         if self.all_candles_ready:
-            lines.extend(["\n############################################ Market Data ############################################\n"])
+            lines.extend(["\n###### Market Data ######\n"])
             signal, take_profit, stop_loss, indicators = self.get_signal_tp_and_sl()
             lines.extend([f"Signal: {signal} | Take Profit: {take_profit} | Stop Loss: {stop_loss}"])
             lines.extend([f"BB%: {indicators[0]} | MACDh: {indicators[1]} | MACD: {indicators[2]}"])
@@ -251,7 +260,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
             self.stored_executors.append(executor)
             close_order_id = executor.close_order.order_id if executor.close_order.order_id else ""
             df = pd.DataFrame([(executor.timestamp,
-                                executor.executor_group_id,
+                                executor.roulette_group_id,
                                 executor.ball_number,
                                 executor.exchange,
                                 executor.trading_pair,
