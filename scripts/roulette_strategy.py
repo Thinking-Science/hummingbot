@@ -170,6 +170,8 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
         if not self.ready_to_trade:
             return "Market connectors are not ready."
         lines = []
+        pnl_usd = 0
+        fees_cum_usd = 0
 
         if len(self.stored_executors) > 0:
             lines.extend([
@@ -180,28 +182,33 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
             lines.extend(executor.to_format_status())
             lines.extend([
                 "-----------------------------------------------------------------------------------------------------------"])
-
+            pnl_usd += executor.pnl_usd
+            fees_cum_usd += executor.cum_fees
         if len(self.active_executors) > 0:
             lines.extend([
                 "\n########################################## Active Executors ##########################################"])
             for executor in self.active_executors:
                 lines.extend([f"|Signal id: {executor.timestamp} | Signal value: {executor.signal_value:.2f} | Ball number: {executor.ball_number} |"])
                 lines.extend(executor.to_format_status())
+                pnl_usd += executor.pnl_usd
+                fees_cum_usd += executor.cum_fees
                 if executor.take_profit_order.order:
                     volume_to_take_profit = self.connectors[executor.exchange].get_volume_for_price(executor.trading_pair, is_buy=True if executor.side == PositionSide.LONG else False, price=executor.take_profit_price)
                     volume_to_stop_loss = self.connectors[executor.exchange].get_volume_for_price(executor.trading_pair, is_buy=False if executor.side == PositionSide.LONG else True, price=executor.stop_loss_price)
                     lines.extend([f"| Stop loss volume: {volume_to_stop_loss.result_volume:.4f} | Take profit volume: {volume_to_take_profit.result_volume:.4f} "])
 
+        lines.extend([f"\n| PNL USD: {pnl_usd:.4f} | Fees cum USD: {fees_cum_usd:.4f} | Net result: {(pnl_usd - fees_cum_usd):.4f} |"])
+
         if self.all_candles_ready:
             lines.extend([
                 "\n############################################ Market Data ############################################\n"])
-            trades_to_filter = [25, 50, 100, 250, 500, 1000, 5000, 10000, 20000]
-            for n_trades in trades_to_filter:
-                if len(self.trades_buffer) > n_trades:
-                    buy_volume, sell_volume, net_volume = self.get_volume_of_last_trades(n_trades)
-                    lines.extend([f"""Sell:{sell_volume:.1f} | Buy: {buy_volume:.1f} | Net: {net_volume:.1f} | Trades: {n_trades}| """])
-            buy_volume, sell_volume, net_volume = self.get_volume_of_last_trades(len(self.trades_buffer))
-            lines.extend([f"All Trades {len(self.trades_buffer)} | Sell:{sell_volume:.1f} | Buy: {buy_volume:.1f} | Total: {net_volume:.1f} |"])
+            # trades_to_filter = [25, 50, 100, 250, 500, 1000, 5000, 10000, 20000]
+            # for n_trades in trades_to_filter:
+            #     if len(self.trades_buffer) > n_trades:
+            #         buy_volume, sell_volume, net_volume = self.get_volume_of_last_trades(n_trades)
+            #         lines.extend([f"""| Sell:{sell_volume:.1f} | Buy: {buy_volume:.1f} | Net: {net_volume:.1f} | Trades: {n_trades}| """])
+            # buy_volume, sell_volume, net_volume = self.get_volume_of_last_trades(len(self.trades_buffer))
+            # lines.extend([f"| Sell:{sell_volume:.1f} | Buy: {buy_volume:.1f} | Total: {net_volume:.1f} | Trades {len(self.trades_buffer)} "])
             columns_to_show = ["timestamp", "open", "low", "high", "close", "volume", "BBP_21_2.0", "BBM_21_2.0", "MACDh_12_26_9", "std", "take_profit", "stop_loss"]
             for candle_name, candles in self.candles.items():
                 candles_df = candles.candles_df
@@ -256,7 +263,9 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
                                        "order_type",
                                        "leverage",
                                        "open_order_id",
-                                       "close_order_id")])
+                                       "close_order_id",
+                                       "realized_pnl_usd",
+                                       "cum_fees_usd")])
             df_header.to_csv(self.csv_path, mode='a', header=False, index=False)
         for executor in executors_to_store:
             self.stored_executors.append(executor)
@@ -286,7 +295,9 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
                                 executor.open_order_type,
                                 self.leverage,
                                 executor.open_order.order_id,
-                                close_order_id
+                                close_order_id,
+                                executor.pnl_usd,
+                                executor.cum_fees
                                 )])
             df.to_csv(self.csv_path, mode='a', header=False, index=False)
         self.active_executors = [executor for executor in self.active_executors if not executor.is_closed]
