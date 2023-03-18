@@ -55,10 +55,10 @@ class TrackedOrder:
 
     @property
     def average_executed_price(self):
-        if self.order:
+        if self.order and self.order.average_executed_price:
             return self.order.average_executed_price
         else:
-            return None
+            return Decimal("0")
 
     @property
     def executed_amount_base(self):
