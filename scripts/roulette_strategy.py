@@ -46,7 +46,7 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
     taker_fee = 0.0003
     maker_fee = 0.00012
     total_fee = taker_fee * 2
-    min_stop_loss = 0.001
+    min_stop_loss = 0.002
     time_limit = 60 * 10  # 10 minutes
 
     short_threshold = -0.5
