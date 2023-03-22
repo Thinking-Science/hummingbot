@@ -44,7 +44,7 @@ class RouletteStrategy(ScriptStrategyBase):
     total_fee = taker_fee * 2
 
     # Configure the parameters for the position
-    stop_loss_multiplier = 0.5
+    stop_loss_multiplier = 0.005
     take_profit_multiplier = 1
     time_limit = 60 * 55
 
@@ -143,21 +143,21 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         mean = last_candle["mean"]
         price = last_candle["close"]
         std_pct = last_candle["std_close"]
-        # if bbp < 0.2 and macdh > 0 and macd < 0:
-        #     signal_value = 1
-        # elif bbp > 0.8 and macdh < 0 and macd > 0:
-        #     signal_value = -1
-        # else:
-        #     signal_value = 0
-
-        if price > mean and bbp < 0.7:
+        if bbp < 0.2 and macdh > 0 and macd < 0:
             signal_value = 1
-        elif price < mean and bbp > 0.3:
+        elif bbp > 0.8 and macdh < 0 and macd > 0:
             signal_value = -1
         else:
             signal_value = 0
+
+        #if price > mean and bbp < 0.7:
+        #    signal_value = 1
+        #elif price < mean and bbp > 0.3:
+        #    signal_value = -1
+        #else:
+        #    signal_value = 0
         take_profit = std_pct * self.take_profit_multiplier
-        stop_loss = std_pct * self.stop_loss_multiplier
+        stop_loss = min(self.stop_loss_multiplier, std_pct * 0.5)
         indicators = [bbp, macdh, macd]
         return signal_value, take_profit, stop_loss, indicators
 
@@ -223,8 +223,8 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         if self.all_candles_ready:
             lines.extend(["\n###### Market Data ######\n"])
             signal, take_profit, stop_loss, indicators = self.get_signal_tp_and_sl()
-            lines.extend([f"Signal: {signal} | Take Profit: {take_profit} | Stop Loss: {stop_loss}"])
-            lines.extend([f"BB%: {indicators[0]} | MACDh: {indicators[1]} | MACD: {indicators[2]}"])
+            lines.extend([f"Signal: {signal} | Take Profit: {take_profit:.4f} | Stop Loss: {stop_loss:.4f}"])
+            lines.extend([f"BB%: {indicators[0]:.2f} | MACDh: {indicators[1]:.6f} | MACD: {indicators[2]:.6f}"])
 
             lines.extend(["\n-----------------------------------------------------------------------------------------------------------\n"])
         else:
