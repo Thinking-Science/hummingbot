@@ -8,7 +8,7 @@ import pandas_ta as ta  # noqa: F401
 
 from hummingbot import data_path
 from hummingbot.connector.connector_base import ConnectorBase
-from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, PriceType
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory
 from hummingbot.smart_components.position_executor.data_types import PositionConfig, PositionExecutorStatus
 from hummingbot.smart_components.position_executor.position_executor import PositionExecutor
@@ -22,6 +22,7 @@ class SignalExecutor(PositionExecutor):
         self.signal_value = signal_value
         self.roulette_group_id = roulette_group_id
         self.ball_number = ball_number
+        self.is_closed = False
 
 
 class RouletteStrategy(ScriptStrategyBase):
@@ -98,25 +99,29 @@ class RouletteStrategy(ScriptStrategyBase):
         return self.candles.is_ready
 
     def on_tick(self):
+
+        self.clean_and_store_executors()
         self.check_and_set_leverage()
         if len(self.get_active_executors()) < self.max_executors and self.all_candles_ready:
             signal, take_profit, stop_loss, indicators = self.get_signal_tp_and_sl()
             if signal < self.short_threshold or signal > self.long_threshold:
                 bet = self.get_roulette_amount(take_profit)
                 position_side = PositionSide.LONG if signal > 0 else PositionSide.SHORT
+                price_type = PriceType.BestAsk if position_side == PositionSide.SHORT else PriceType.BestBid
+                price_limit_order = self.connectors[self.exchange].get_price_by_type(self.trading_pair,price_type)
                 self.notify_hb_app_with_timestamp(f"""
 Creating new position for game {self.roulette_group_id} --> Ball: {self.ball_number}!
 Signal: {signal} | {position_side}
 Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
 """)
-                price = self.connectors[self.exchange].get_mid_price(self.trading_pair)
+                #price = self.connectors[self.exchange].get_mid_price(self.trading_pair)
                 signal_executor = SignalExecutor(
                     position_config=PositionConfig(
                         timestamp=self.current_timestamp, trading_pair=self.trading_pair,
-                        exchange=self.exchange, order_type=OrderType.MARKET,
+                        exchange=self.exchange, order_type=OrderType.LIMIT,
                         side=position_side,
-                        entry_price=price,
-                        amount=bet / price,
+                        entry_price=price_limit_order,
+                        amount=bet / price_limit_order,
                         stop_loss=stop_loss,
                         take_profit=take_profit,
                         time_limit=self.time_limit),
@@ -126,7 +131,6 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                     ball_number=self.ball_number
                 )
                 self.active_executors.append(signal_executor)
-        self.clean_and_store_executors()
 
     def get_signal_tp_and_sl(self):
         candles_df = self.candles.candles_df
@@ -232,7 +236,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         return "\n".join(lines)
 
     def clean_and_store_executors(self):
-        executors_to_store = [executor for executor in self.active_executors if executor.is_closed]
+        executors_to_store = [executor for executor in self.active_executors if executor.is_closed and executor.status != ORDER_PLACED]
         if not os.path.exists(self.csv_path):
             df_header = pd.DataFrame([("timestamp",
                                        "roulette_group_id",
