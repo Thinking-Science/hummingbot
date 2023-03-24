@@ -22,7 +22,6 @@ class SignalExecutor(PositionExecutor):
         self.signal_value = signal_value
         self.roulette_group_id = roulette_group_id
         self.ball_number = ball_number
-        self.is_closed = False
 
 
 class RouletteStrategy(ScriptStrategyBase):
@@ -109,6 +108,7 @@ class RouletteStrategy(ScriptStrategyBase):
                 position_side = PositionSide.LONG if signal > 0 else PositionSide.SHORT
                 price_type = PriceType.BestAsk if position_side == PositionSide.SHORT else PriceType.BestBid
                 price_limit_order = self.connectors[self.exchange].get_price_by_type(self.trading_pair,price_type)
+                price_limit_buffer_multiplier = 1.001 if position_side == PositionSide.SHORT else 0.999
                 self.notify_hb_app_with_timestamp(f"""
 Creating new position for game {self.roulette_group_id} --> Ball: {self.ball_number}!
 Signal: {signal} | {position_side}
@@ -120,7 +120,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                         timestamp=self.current_timestamp, trading_pair=self.trading_pair,
                         exchange=self.exchange, order_type=OrderType.LIMIT,
                         side=position_side,
-                        entry_price=price_limit_order,
+                        entry_price=Decimal(price_limit_order)*Decimal(price_limit_buffer_multiplier),
                         amount=bet / price_limit_order,
                         stop_loss=stop_loss,
                         take_profit=take_profit,
@@ -147,9 +147,9 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         mean = last_candle["mean"]
         price = last_candle["close"]
         std_pct = last_candle["std_close"]
-        if bbp < 0.2 and macdh > 0 and macd < 0:
+        if bbp < 0.3 and macdh > 0 and macd < 0:
             signal_value = 1
-        elif bbp > 0.8 and macdh < 0 and macd > 0:
+        elif bbp > 0.7 and macdh < 0 and macd > 0:
             signal_value = -1
         else:
             signal_value = 0
@@ -236,7 +236,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         return "\n".join(lines)
 
     def clean_and_store_executors(self):
-        executors_to_store = [executor for executor in self.active_executors if executor.is_closed and executor.status != ORDER_PLACED]
+        executors_to_store = [executor for executor in self.active_executors if executor.is_closed]
         if not os.path.exists(self.csv_path):
             df_header = pd.DataFrame([("timestamp",
                                        "roulette_group_id",
