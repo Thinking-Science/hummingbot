@@ -37,24 +37,25 @@ class RouletteStrategy(ScriptStrategyBase):
 
     # Maximum position executors at a time
     max_executors = 1
-    roulette_by_trading_pair = {trading_pair: {
-        "stop_loss_multiplier": 0.5,
-        "max_stop_loss": 0.005,
-        "take_profit_multiplier": 1,
-        "time_limit": 60 * 55,
-        "order_placed_time_limt": 1,
-        "limit_order_price_buffer": 0.001,
-        "leverage": 20,
-        "initial_order_amount": Decimal("6"),
-        "active_executors": [],
-        "closed_executors": [],
-        "candles": CandlesFactory.get_candle(connector=exchange,
-                                             trading_pair=trading_pair,
-                                             interval="1m", max_records=500),
-        "roulette_group_id": 0,
-        "ball_number": 1,
-        "csv_path": data_path() + f"/roulette_{exchange}_{trading_pair}_{today.day:02d}-{today.month:02d}-{today.year}-{today.hour}.csv"}
-        for trading_pair in trading_pairs}
+    roulette_by_trading_pair = {}
+    for trading_pair in trading_pairs:
+        roulette_by_trading_pair[trading_pair] = {
+            "stop_loss_multiplier": 0.5,
+            "max_stop_loss": 0.005,
+            "take_profit_multiplier": 1,
+            "time_limit": 60 * 55,
+            "order_placed_time_limt": 1,
+            "limit_order_price_buffer": 0.001,
+            "leverage": 20,
+            "initial_order_amount_usd": Decimal("6"),
+            "active_executors": [],
+            "stored_executors": [],
+            "candles": CandlesFactory.get_candle(connector=exchange,
+                                                 trading_pair=trading_pair,
+                                                 interval="1m", max_records=500),
+            "roulette_group_id": 0,
+            "ball_number": 1,
+            "csv_path": data_path() + f"/roulette_{exchange}_{trading_pair}_{today.day:02d}-{today.month:02d}-{today.year}-{today.hour}.csv"}
 
     # Fee structure
     taker_fee = 0.0003
@@ -107,7 +108,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
 """)
                     signal_executor = SignalExecutor(
                         position_config=PositionConfig(
-                            timestamp=self.current_timestamp, trading_pair=roulette_info["trading_pair"],
+                            timestamp=self.current_timestamp, trading_pair=trading_pair,
                             exchange=self.exchange, order_type=OrderType.LIMIT,
                             side=position_side,
                             entry_price=Decimal(price_limit_order) * Decimal(price_limit_buffer_multiplier),
@@ -149,7 +150,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
 
     def get_executors_by_roulette_group_id(self, roulette_info):
         roulette_by_group_id = {}
-        for executor in roulette_info["closed_executors"]:
+        for executor in roulette_info["stored_executors"]:
             if executor.roulette_group_id not in roulette_by_group_id:
                 roulette_by_group_id[executor.roulette_group_id] = [executor]
             else:
@@ -181,21 +182,24 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         if not self.ready_to_trade:
             return "Market connectors are not ready."
         lines = []
-
-        pnl_usd = 0
-        fees_cum_usd = 0
-
+        pnl_usd_global = 0
+        fees_cum_usd_global = 0
         for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
+
+            pnl_usd = 0
+            fees_cum_usd = 0
+            lines.extend([f"Trading Pair: {trading_pair}"])
             if len(roulette_info["stored_executors"]) > 0:
                 lines.extend(["\n###### Roulette Stats ######"])
                 for roulette_id, stats in self.calculate_roulette_stats(roulette_info).items():
-                    lines.extend([f"Trading Pair: {trading_pair}"])
                     lines.extend([f"""
 | Roulette id: {roulette_id} | Ball numbers: {stats['ball_numbers']} |
 | Realized PNL: {stats['realized_pnl']:.4f} | Fees cum: {stats['cum_fees']:.4f} | Net result: {stats['net_pnl']:.4f} |
 | Max order amount USD: {stats['max_order_amount_usd']:.4f} | Max margin USD: {stats['max_margin_usd']:.4f} |
     """])
             for executor in roulette_info["stored_executors"]:
+                pnl_usd_global = executor.pnl_usd
+                fees_cum_usd_global += executor.cum_fees
                 pnl_usd += executor.pnl_usd
                 fees_cum_usd += executor.cum_fees
             if len(roulette_info["active_executors"]) > 0:
@@ -217,6 +221,8 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                 lines.extend(["\n-----------------------------------------------------------------------------------------------------------\n"])
             else:
                 lines.extend(["", "  No data collected."])
+        lines.extend([
+            f"\n| PNL USD: {pnl_usd_global:.4f} | Fees cum USD: {fees_cum_usd_global:.4f} | Net result: {(pnl_usd - fees_cum_usd):.4f} |"])
         return "\n".join(lines)
 
     def clean_and_store_executors(self):
@@ -256,7 +262,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                 df_header.to_csv(roulette_info["csv_path"], mode='a', header=False, index=False)
             for executor in executors_to_store:
                 roulette_info["stored_executors"].append(executor)
-                close_order_id = executor.close_order.order_id if executor.close_order.order_id else ""
+                close_order_id = executor.close_order.order_id if executor.close_order else ""
                 df = pd.DataFrame([(executor.timestamp,
                                     executor.roulette_group_id,
                                     executor.ball_number,
@@ -313,7 +319,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
     def check_and_set_leverage(self):
         if not self.set_leverage_flag:
             for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
-                connector = self.connectors[trading_pair]
+                connector = self.connectors[self.exchange]
                 connector.set_position_mode(PositionMode.HEDGE)
                 connector.set_leverage(trading_pair=trading_pair, leverage=roulette_info["leverage"])
             self.set_leverage_flag = True
@@ -321,7 +327,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
     def get_roulette_amount(self, trading_pair, roulette_info, take_profit):
         net_loss_usd = 0
         ball_number = 1
-        for executor in reversed(roulette_info["closed_executors"]):
+        for executor in reversed(roulette_info["stored_executors"]):
             if executor.status == PositionExecutorStatus.CLOSED_BY_TAKE_PROFIT:
                 break
             else:
@@ -329,7 +335,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                 net_loss_usd += (executor.pnl_usd - executor.cum_fees)
 
         extra_amount = - net_loss_usd / Decimal(
-            take_profit - roulette_info["taker_fee"] - roulette_info["maker_fee"]) if net_loss_usd < Decimal(
+            take_profit - self.taker_fee - self.maker_fee) if net_loss_usd < Decimal(
             "0") else Decimal("0")
 
         if ball_number == 1 or extra_amount == 0:
