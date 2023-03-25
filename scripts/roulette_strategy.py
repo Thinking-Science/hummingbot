@@ -1,7 +1,7 @@
 import datetime
 import os
 from decimal import Decimal
-from typing import Dict, List
+from typing import Dict
 
 import pandas as pd
 import pandas_ta as ta  # noqa: F401
@@ -30,50 +30,51 @@ class RouletteStrategy(ScriptStrategyBase):
     IMPORTANT: Binance perpetual has to be in Single Asset Mode, soon we are going to support Multi Asset Mode.
     """
     # Define the trading pair and exchange that we want to use and the csv where we are going to store the entries
-    trading_pair = "DODO-BUSD"
+    trading_pairs = ["DODO-BUSD", "APE-BUSD"]
     exchange = "binance_perpetual"
+
+    today = datetime.datetime.today()
 
     # Maximum position executors at a time
     max_executors = 1
-    active_executors: List[SignalExecutor] = []
-    stored_executors: List[SignalExecutor] = []
+    roulette_by_trading_pair = {trading_pair: {
+        "stop_loss_multiplier": 0.5,
+        "max_stop_loss": 0.005,
+        "take_profit_multiplier": 1,
+        "time_limit": 60 * 55,
+        "order_placed_time_limt": 1,
+        "limit_order_price_buffer": 0.001,
+        "leverage": 20,
+        "initial_order_amount": Decimal("6"),
+        "active_executors": [],
+        "closed_executors": [],
+        "candles": CandlesFactory.get_candle(connector=exchange,
+                                             trading_pair=trading_pair,
+                                             interval="1m", max_records=500),
+        "roulette_group_id": 0,
+        "ball_number": 1,
+        "csv_path": data_path() + f"/roulette_{exchange}_{trading_pair}_{today.day:02d}-{today.month:02d}-{today.year}-{today.hour}.csv"}
+        for trading_pair in trading_pairs}
 
     # Fee structure
     taker_fee = 0.0003
     maker_fee = 0.00012
     total_fee = taker_fee * 2
 
-    # Configure the parameters for the position
-    stop_loss_multiplier = 0.005
-    take_profit_multiplier = 1
-    time_limit = 60 * 55
-
     short_threshold = -0.5
     long_threshold = 0.5
 
-    candles = CandlesFactory.get_candle(connector=exchange,
-                                        trading_pair=trading_pair,
-                                        interval="1m", max_records=500)
-
     # Configure the leverage and order amount the bot is going to use
     set_leverage_flag = None
-    leverage = 20
-
-    # Roulette amount configuration
-    initial_order_amount_usd = Decimal("6")
-    roulette_group_id = 0
-    ball_number = 1
-
-    today = datetime.datetime.today()
-    csv_path = data_path() + f"/roulette_{exchange}_{trading_pair}_{today.day:02d}-{today.month:02d}-{today.year}-{today.hour}.csv"
 
     # Suscribe to trades
-    markets = {exchange: {trading_pair}}
+    markets = {exchange: set(trading_pairs)}
 
     def __init__(self, connectors: Dict[str, ConnectorBase]):
         # Is necessary to start the Candles Feed.
         super().__init__(connectors)
-        self.candles.start()
+        for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
+            roulette_info["candles"].start()
 
     def on_stop(self):
         """
@@ -82,58 +83,47 @@ class RouletteStrategy(ScriptStrategyBase):
         """
         # we are going to close all the open positions when the bot stops
         self.close_open_positions()
-        self.candles.stop()
-
-    def get_active_executors(self):
-        return self.active_executors
-
-    def get_closed_executors(self):
-        return self.stored_executors
-
-    @property
-    def all_candles_ready(self):
-        """
-        Checks if the candlesticks are full.
-        """
-        return self.candles.is_ready
+        for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
+            roulette_info["candles"].stop()
 
     def on_tick(self):
-
         self.clean_and_store_executors()
         self.check_and_set_leverage()
-        if len(self.get_active_executors()) < self.max_executors and self.all_candles_ready:
-            signal, take_profit, stop_loss, indicators = self.get_signal_tp_and_sl()
-            if signal < self.short_threshold or signal > self.long_threshold:
-                bet = self.get_roulette_amount(take_profit)
-                position_side = PositionSide.LONG if signal > 0 else PositionSide.SHORT
-                price_type = PriceType.BestAsk if position_side == PositionSide.SHORT else PriceType.BestBid
-                price_limit_order = self.connectors[self.exchange].get_price_by_type(self.trading_pair,price_type)
-                price_limit_buffer_multiplier = 1.001 if position_side == PositionSide.SHORT else 0.999
-                self.notify_hb_app_with_timestamp(f"""
-Creating new position for game {self.roulette_group_id} --> Ball: {self.ball_number}!
+        for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
+            if len(roulette_info["active_executors"]) < self.max_executors and roulette_info["candles"].is_ready:
+                signal, take_profit, stop_loss, indicators = self.get_signal_tp_and_sl(roulette_info)
+                if signal < self.short_threshold or signal > self.long_threshold:
+                    bet = self.get_roulette_amount(trading_pair, roulette_info, take_profit)
+                    position_side = PositionSide.LONG if signal > 0 else PositionSide.SHORT
+                    price_type = PriceType.BestAsk if position_side == PositionSide.SHORT else PriceType.BestBid
+                    price_limit_order = self.connectors[self.exchange].get_price_by_type(trading_pair, price_type)
+                    price_limit_buffer_multiplier = 1 + roulette_info["limit_order_price_buffer"] \
+                        if position_side == PositionSide.SHORT else 1 - roulette_info["limit_order_price_buffer"]
+                    self.notify_hb_app_with_timestamp(f"""
+Trading Pair: {trading_pair}
+Creating new position for game {roulette_info['roulette_group_id']} --> Ball: {roulette_info['ball_number']}!
 Signal: {signal} | {position_side}
 Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
 """)
-                #price = self.connectors[self.exchange].get_mid_price(self.trading_pair)
-                signal_executor = SignalExecutor(
-                    position_config=PositionConfig(
-                        timestamp=self.current_timestamp, trading_pair=self.trading_pair,
-                        exchange=self.exchange, order_type=OrderType.LIMIT,
-                        side=position_side,
-                        entry_price=Decimal(price_limit_order)*Decimal(price_limit_buffer_multiplier),
-                        amount=bet / price_limit_order,
-                        stop_loss=stop_loss,
-                        take_profit=take_profit,
-                        time_limit=self.time_limit),
-                    strategy=self,
-                    signal_value=signal,
-                    roulette_group_id=self.roulette_group_id,
-                    ball_number=self.ball_number
-                )
-                self.active_executors.append(signal_executor)
+                    signal_executor = SignalExecutor(
+                        position_config=PositionConfig(
+                            timestamp=self.current_timestamp, trading_pair=roulette_info["trading_pair"],
+                            exchange=self.exchange, order_type=OrderType.LIMIT,
+                            side=position_side,
+                            entry_price=Decimal(price_limit_order) * Decimal(price_limit_buffer_multiplier),
+                            amount=bet / price_limit_order,
+                            stop_loss=stop_loss,
+                            take_profit=take_profit,
+                            time_limit=roulette_info["time_limit"]),
+                        strategy=self,
+                        signal_value=signal,
+                        roulette_group_id=roulette_info["roulette_group_id"],
+                        ball_number=roulette_info["ball_number"]
+                    )
+                    roulette_info["active_executors"].append(signal_executor)
 
-    def get_signal_tp_and_sl(self):
-        candles_df = self.candles.candles_df
+    def get_signal_tp_and_sl(self, roulette_info):
+        candles_df = roulette_info["candles"].candles_df
         # Let's add some technical indicators
         candles_df.ta.bbands(length=100, append=True)
         candles_df.ta.macd(fast=21, slow=42, signal=9, append=True)
@@ -144,8 +134,6 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         bbp = last_candle["BBP_100_2.0"]
         macdh = last_candle["MACDh_21_42_9"]
         macd = last_candle["MACD_21_42_9"]
-        mean = last_candle["mean"]
-        price = last_candle["close"]
         std_pct = last_candle["std_close"]
         if bbp < 0.5 and macdh > 0 and macd < 0:
             signal_value = 1
@@ -154,29 +142,23 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         else:
             signal_value = 0
 
-        #if price > mean and bbp < 0.7:
-        #    signal_value = 1
-        #elif price < mean and bbp > 0.3:
-        #    signal_value = -1
-        #else:
-        #    signal_value = 0
-        take_profit = std_pct * self.take_profit_multiplier
-        stop_loss = min(self.stop_loss_multiplier, std_pct * 0.5)
+        take_profit = std_pct * roulette_info["take_profit_multiplier"]
+        stop_loss = min(roulette_info["stop_loss_multiplier"], std_pct * 0.5)
         indicators = [bbp, macdh, macd]
         return signal_value, take_profit, stop_loss, indicators
 
-    def get_executors_by_roulette_group_id(self):
+    def get_executors_by_roulette_group_id(self, roulette_info):
         roulette_by_group_id = {}
-        for executor in self.get_closed_executors():
+        for executor in roulette_info["closed_executors"]:
             if executor.roulette_group_id not in roulette_by_group_id:
                 roulette_by_group_id[executor.roulette_group_id] = [executor]
             else:
                 roulette_by_group_id[executor.roulette_group_id].append(executor)
         return roulette_by_group_id
 
-    def calculate_roulette_stats(self):
+    def calculate_roulette_stats(self, roulette_info):
         results_by_roulette_id = {}
-        for roullete_id, executors in self.get_executors_by_roulette_group_id().items():
+        for roullete_id, executors in self.get_executors_by_roulette_group_id(roulette_info).items():
             ball_numbers = len(executors)
             realized_pnl = sum([executor.pnl_usd for executor in executors])
             cum_fees = sum([executor.cum_fees for executor in executors])
@@ -188,7 +170,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                 "cum_fees": cum_fees,
                 "net_pnl": net_pnl,
                 "max_order_amount_usd": max_order_amount_usd,
-                "max_margin_usd": max_order_amount_usd / self.leverage,
+                "max_margin_usd": max_order_amount_usd / roulette_info["leverage"],
             }
         return results_by_roulette_id
 
@@ -203,98 +185,103 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         pnl_usd = 0
         fees_cum_usd = 0
 
-        if len(self.stored_executors) > 0:
-            lines.extend(["\n###### Roulette Stats ######"])
-            for roulette_id, stats in self.calculate_roulette_stats().items():
-                lines.extend([f"""
+        for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
+            if len(roulette_info["stored_executors"]) > 0:
+                lines.extend(["\n###### Roulette Stats ######"])
+                for roulette_id, stats in self.calculate_roulette_stats(roulette_info).items():
+                    lines.extend([f"Trading Pair: {trading_pair}"])
+                    lines.extend([f"""
 | Roulette id: {roulette_id} | Ball numbers: {stats['ball_numbers']} |
 | Realized PNL: {stats['realized_pnl']:.4f} | Fees cum: {stats['cum_fees']:.4f} | Net result: {stats['net_pnl']:.4f} |
 | Max order amount USD: {stats['max_order_amount_usd']:.4f} | Max margin USD: {stats['max_margin_usd']:.4f} |
-"""])
-        for executor in self.stored_executors:
-            pnl_usd += executor.pnl_usd
-            fees_cum_usd += executor.cum_fees
-        if len(self.active_executors) > 0:
-            lines.extend(["\n###### Active Executors ######"])
-            for executor in self.active_executors:
-                lines.extend([f"|Signal id: {executor.timestamp} | Signal value: {executor.signal_value:.2f} | Ball number: {executor.ball_number} |"])
-                lines.extend(executor.to_format_status())
+    """])
+            for executor in roulette_info["stored_executors"]:
                 pnl_usd += executor.pnl_usd
                 fees_cum_usd += executor.cum_fees
+            if len(roulette_info["active_executors"]) > 0:
+                lines.extend(["\n###### Active Executors ######"])
+                for executor in roulette_info["active_executors"]:
+                    lines.extend([f"|Signal id: {executor.timestamp} | Signal value: {executor.signal_value:.2f} | Ball number: {executor.ball_number} |"])
+                    lines.extend(executor.to_format_status())
+                    pnl_usd += executor.pnl_usd
+                    fees_cum_usd += executor.cum_fees
 
-        lines.extend([f"\n| PNL USD: {pnl_usd:.4f} | Fees cum USD: {fees_cum_usd:.4f} | Net result: {(pnl_usd - fees_cum_usd):.4f} |"])
+            lines.extend([
+                f"\n| PNL USD: {pnl_usd:.4f} | Fees cum USD: {fees_cum_usd:.4f} | Net result: {(pnl_usd - fees_cum_usd):.4f} |"])
+            if roulette_info["candles"].is_ready:
+                lines.extend(["\n###### Market Data ######\n"])
+                signal, take_profit, stop_loss, indicators = self.get_signal_tp_and_sl(roulette_info)
+                lines.extend([f"Signal: {signal} | Take Profit: {take_profit:.4f} | Stop Loss: {stop_loss:.4f}"])
+                lines.extend([f"BB%: {indicators[0]:.2f} | MACDh: {indicators[1]:.6f} | MACD: {indicators[2]:.6f}"])
 
-        if self.all_candles_ready:
-            lines.extend(["\n###### Market Data ######\n"])
-            signal, take_profit, stop_loss, indicators = self.get_signal_tp_and_sl()
-            lines.extend([f"Signal: {signal} | Take Profit: {take_profit:.4f} | Stop Loss: {stop_loss:.4f}"])
-            lines.extend([f"BB%: {indicators[0]:.2f} | MACDh: {indicators[1]:.6f} | MACD: {indicators[2]:.6f}"])
-
-            lines.extend(["\n-----------------------------------------------------------------------------------------------------------\n"])
-        else:
-            lines.extend(["", "  No data collected."])
+                lines.extend(["\n-----------------------------------------------------------------------------------------------------------\n"])
+            else:
+                lines.extend(["", "  No data collected."])
         return "\n".join(lines)
 
     def clean_and_store_executors(self):
-        minutes = 1
-        limit_order_to_reset = [executor for executor in self.active_executors if executor.status == PositionExecutorStatus.ORDER_PLACED and executor.position_config.timestamp + minutes*1000*60 <= self.current_timestamp]
-        for executor in limit_order_to_reset:
-            executor.cancel_executor_order_placed()
-            if self.ball_number > 1:
-                self.ball_number -= 1
-            else:
-                self.ball_number = 1
-        executors_to_store = [executor for executor in self.active_executors if executor.is_closed]
-        if not os.path.exists(self.csv_path):
-            df_header = pd.DataFrame([("timestamp",
-                                       "roulette_group_id",
-                                       "ball_number",
-                                       "exchange",
-                                       "trading_pair",
-                                       "side",
-                                       "amount",
-                                       "pnl",
-                                       "close_timestamp",
-                                       "entry_price",
-                                       "close_price",
-                                       "last_status",
-                                       "sl",
-                                       "tp",
-                                       "tl",
-                                       "order_type",
-                                       "leverage",
-                                       "open_order_id",
-                                       "close_order_id",
-                                       "realized_pnl_usd",
-                                       "cum_fees_usd")])
-            df_header.to_csv(self.csv_path, mode='a', header=False, index=False)
-        for executor in executors_to_store:
-            self.stored_executors.append(executor)
-            close_order_id = executor.close_order.order_id if executor.close_order.order_id else ""
-            df = pd.DataFrame([(executor.timestamp,
-                                executor.roulette_group_id,
-                                executor.ball_number,
-                                executor.exchange,
-                                executor.trading_pair,
-                                executor.side,
-                                executor.amount,
-                                executor.pnl,
-                                executor.close_timestamp,
-                                executor.entry_price,
-                                executor.close_price,
-                                executor.status,
-                                executor.position_config.stop_loss,
-                                executor.position_config.take_profit,
-                                executor.position_config.time_limit,
-                                executor.open_order_type,
-                                self.leverage,
-                                executor.open_order.order_id,
-                                close_order_id,
-                                executor.pnl_usd,
-                                executor.cum_fees
-                                )])
-            df.to_csv(self.csv_path, mode='a', header=False, index=False)
-        self.active_executors = [executor for executor in self.active_executors if not executor.is_closed]
+        for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
+            limit_order_to_reset = [executor for executor in roulette_info["active_executors"] if
+                                    executor.status == PositionExecutorStatus.ORDER_PLACED and executor.position_config.timestamp +
+                                    roulette_info["limit_order_price_buffer"] * 1000 * 60 <= self.current_timestamp]
+            for executor in limit_order_to_reset:
+                executor.cancel_executor_order_placed()
+                if roulette_info["ball_number"] > 1:
+                    roulette_info["ball_number"] -= 1
+                else:
+                    roulette_info["ball_number"] = 1
+            executors_to_store = [executor for executor in roulette_info["active_executors"] if executor.is_closed]
+            if not os.path.exists(roulette_info["csv_path"]):
+                df_header = pd.DataFrame([("timestamp",
+                                           "roulette_group_id",
+                                           "ball_number",
+                                           "exchange",
+                                           "trading_pair",
+                                           "side",
+                                           "amount",
+                                           "pnl",
+                                           "close_timestamp",
+                                           "entry_price",
+                                           "close_price",
+                                           "last_status",
+                                           "sl",
+                                           "tp",
+                                           "tl",
+                                           "order_type",
+                                           "leverage",
+                                           "open_order_id",
+                                           "close_order_id",
+                                           "realized_pnl_usd",
+                                           "cum_fees_usd")])
+                df_header.to_csv(roulette_info["csv_path"], mode='a', header=False, index=False)
+            for executor in executors_to_store:
+                roulette_info["stored_executors"].append(executor)
+                close_order_id = executor.close_order.order_id if executor.close_order.order_id else ""
+                df = pd.DataFrame([(executor.timestamp,
+                                    executor.roulette_group_id,
+                                    executor.ball_number,
+                                    executor.exchange,
+                                    executor.trading_pair,
+                                    executor.side,
+                                    executor.amount,
+                                    executor.pnl,
+                                    executor.close_timestamp,
+                                    executor.entry_price,
+                                    executor.close_price,
+                                    executor.status,
+                                    executor.position_config.stop_loss,
+                                    executor.position_config.take_profit,
+                                    executor.position_config.time_limit,
+                                    executor.open_order_type,
+                                    roulette_info["leverage"],
+                                    executor.open_order.order_id,
+                                    close_order_id,
+                                    executor.pnl_usd,
+                                    executor.cum_fees
+                                    )])
+                df.to_csv(roulette_info["csv_path"], mode='a', header=False, index=False)
+            roulette_info["active_executors"] = [executor for executor in roulette_info["active_executors"] if
+                                                 not executor.is_closed]
 
     def close_open_positions(self):
         # we are going to close all the open positions when the bot stops
@@ -315,9 +302,9 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                              price=connector.get_mid_price(position.trading_pair),
                              position_action=PositionAction.CLOSE)
 
-    def is_margin_enough(self, betting_amount):
-        quote_balance = self.connectors[self.exchange].get_balance(self.trading_pair.split("-")[-1])
-        if betting_amount * Decimal("1.01") < quote_balance * Decimal(str(self.leverage)):
+    def is_margin_enough(self, betting_amount, trading_pair, roulette_info):
+        quote_balance = self.connectors[self.exchange].get_balance(trading_pair.split("-")[-1])
+        if betting_amount * Decimal("1.01") < quote_balance * Decimal(str(roulette_info["leverage"])):
             return True
         else:
             self.logger().info("No enough margin to place orders.")
@@ -325,33 +312,35 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
 
     def check_and_set_leverage(self):
         if not self.set_leverage_flag:
-            for connector in self.connectors.values():
-                for trading_pair in connector.trading_pairs:
-                    connector.set_position_mode(PositionMode.HEDGE)
-                    connector.set_leverage(trading_pair=trading_pair, leverage=self.leverage)
+            for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
+                connector = self.connectors[trading_pair]
+                connector.set_position_mode(PositionMode.HEDGE)
+                connector.set_leverage(trading_pair=trading_pair, leverage=roulette_info["leverage"])
             self.set_leverage_flag = True
 
-    def get_roulette_amount(self, take_profit):
+    def get_roulette_amount(self, trading_pair, roulette_info, take_profit):
         net_loss_usd = 0
         ball_number = 1
-        for executor in reversed(self.get_closed_executors()):
+        for executor in reversed(roulette_info["closed_executors"]):
             if executor.status == PositionExecutorStatus.CLOSED_BY_TAKE_PROFIT:
                 break
             else:
                 ball_number += 1
                 net_loss_usd += (executor.pnl_usd - executor.cum_fees)
 
-        extra_amount = - net_loss_usd / Decimal(take_profit - self.taker_fee - self.maker_fee) if net_loss_usd < Decimal("0") else Decimal("0")
+        extra_amount = - net_loss_usd / Decimal(
+            take_profit - roulette_info["taker_fee"] - roulette_info["maker_fee"]) if net_loss_usd < Decimal(
+            "0") else Decimal("0")
 
         if ball_number == 1 or extra_amount == 0:
-            self.roulette_group_id += 1
+            roulette_info["roulette_group_id"] += 1
             ball_number = 1
-        self.ball_number = ball_number
-        amount = self.initial_order_amount_usd + extra_amount
+        roulette_info["ball_number"] = ball_number
+        amount = roulette_info["initial_order_amount_usd"] + extra_amount
 
-        if not self.is_margin_enough(betting_amount=amount):
-            self.notify_hb_app_with_timestamp(f"Game over! Not enough margin to bet {amount}")
-            amount = self.initial_order_amount_usd
-            self.roulette_group_id += 1
-            self.ball_number = 1
+        if not self.is_margin_enough(betting_amount=amount, trading_pair=trading_pair, roulette_info=roulette_info):
+            self.notify_hb_app_with_timestamp(f"Game over! Not enough margin to bet {amount} for {trading_pair}")
+            amount = roulette_info["initial_order_amount_usd"]
+            roulette_info["roulette_group_id"] += 1
+            roulette_info["ball_number"] = 1
         return amount
