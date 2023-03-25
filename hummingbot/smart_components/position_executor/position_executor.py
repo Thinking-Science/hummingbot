@@ -456,6 +456,15 @@ class PositionExecutor:
         else:
             return self._strategy.sell(connector_name, trading_pair, amount, order_type, price, position_action)
 
+    def cancel_executor_order_placed(self):
+        self._strategy.cancel(
+            connector_name=self.exchange,
+            trading_pair=self.trading_pair,
+            order_id=self._open_order.order_id
+        )
+        self.status = PositionExecutorStatus.CLOSED_BY_TIME_LIMIT
+        self.logger().info("Removing open order triggered by the strategy")
+
     def to_format_status(self):
         lines = []
         current_price = self.connector.get_mid_price(self.trading_pair)

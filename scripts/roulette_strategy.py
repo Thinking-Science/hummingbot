@@ -147,9 +147,9 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         mean = last_candle["mean"]
         price = last_candle["close"]
         std_pct = last_candle["std_close"]
-        if bbp < 0.3 and macdh > 0 and macd < 0:
+        if bbp < 0.5 and macdh > 0 and macd < 0:
             signal_value = 1
-        elif bbp > 0.7 and macdh < 0 and macd > 0:
+        elif bbp > 0.5 and macdh < 0 and macd > 0:
             signal_value = -1
         else:
             signal_value = 0
@@ -236,6 +236,14 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         return "\n".join(lines)
 
     def clean_and_store_executors(self):
+        minutes = 1
+        limit_order_to_reset = [executor for executor in self.active_executors if executor.status == PositionExecutorStatus.ORDER_PLACED and executor.position_config.timestamp + minutes*1000*60 <= self.current_timestamp]
+        for executor in limit_order_to_reset:
+            executor.cancel_executor_order_placed()
+            if self.ball_number > 1:
+                self.ball_number -= 1
+            else:
+                self.ball_number = 1
         executors_to_store = [executor for executor in self.active_executors if executor.is_closed]
         if not os.path.exists(self.csv_path):
             df_header = pd.DataFrame([("timestamp",
