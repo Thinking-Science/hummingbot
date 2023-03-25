@@ -100,12 +100,12 @@ class RouletteStrategy(ScriptStrategyBase):
                     price_limit_order = self.connectors[self.exchange].get_price_by_type(trading_pair, price_type)
                     price_limit_buffer_multiplier = 1 + roulette_info["limit_order_price_buffer"] \
                         if position_side == PositionSide.SHORT else 1 - roulette_info["limit_order_price_buffer"]
-                    self.notify_hb_app_with_timestamp(f"""
+                    self.logger().info(f"""
 Trading Pair: {trading_pair}
 Creating new position for game {roulette_info['roulette_group_id']} --> Ball: {roulette_info['ball_number']}!
 Signal: {signal} | {position_side}
 Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
-""")
+                    """)
                     signal_executor = SignalExecutor(
                         position_config=PositionConfig(
                             timestamp=self.current_timestamp, trading_pair=trading_pair,
@@ -160,7 +160,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
     def calculate_roulette_stats(self, roulette_info):
         results_by_roulette_id = {}
         for roullete_id, executors in self.get_executors_by_roulette_group_id(roulette_info).items():
-            ball_numbers = len(executors)
+            ball_numbers = len([x for x in executors if x.status != PositionExecutorStatus.CANCELED_BY_TIME_LIMIT])
             realized_pnl = sum([executor.pnl_usd for executor in executors])
             cum_fees = sum([executor.cum_fees for executor in executors])
             max_order_amount_usd = max([executor.amount * executor.entry_price for executor in executors])
@@ -227,15 +227,14 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
 
     def clean_and_store_executors(self):
         for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
-            limit_order_to_reset = [executor for executor in roulette_info["active_executors"] if
-                                    executor.status == PositionExecutorStatus.ORDER_PLACED and executor.position_config.timestamp +
-                                    roulette_info["limit_order_price_buffer"] * 1000 * 60 <= self.current_timestamp]
-            for executor in limit_order_to_reset:
-                executor.cancel_executor_order_placed()
-                if roulette_info["ball_number"] > 1:
-                    roulette_info["ball_number"] -= 1
-                else:
-                    roulette_info["ball_number"] = 1
+            current_price = self.connectors[self.exchange].get_mid_price(trading_pair)
+            waiting_executors = [x for x in roulette_info["active_executors"] if x.status == PositionExecutorStatus.ORDER_PLACED]
+            for executor_waiting_to_enter in waiting_executors:
+                open_order_entry_price = executor_waiting_to_enter._open_order._order.price
+                buffer_used = 1 + roulette_info["limit_order_price_buffer"] if executor_waiting_to_enter.side == PositionSide.SHORT else 1 - roulette_info["limit_order_price_buffer"]
+                price_when_order_placed = Decimal(open_order_entry_price)/Decimal(buffer_used)
+                if abs(Decimal(current_price)-Decimal(open_order_entry_price)) > abs(Decimal(price_when_order_placed)-Decimal(open_order_entry_price)):
+                    executor_waiting_to_enter.cancel_executor_order_placed()
             executors_to_store = [executor for executor in roulette_info["active_executors"] if executor.is_closed]
             if not os.path.exists(roulette_info["csv_path"]):
                 df_header = pd.DataFrame([("timestamp",
@@ -271,7 +270,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                                     executor.side,
                                     executor.amount,
                                     executor.pnl,
-                                    executor.close_timestamp,
+                                    executor.close_timestamp if close_order_id else '',
                                     executor.entry_price,
                                     executor.close_price,
                                     executor.status,
@@ -327,18 +326,24 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
     def get_roulette_amount(self, trading_pair, roulette_info, take_profit):
         net_loss_usd = 0
         ball_number = 1
+        total_closed_executors_in_roullete = 0
+        failed_entries_in_roullete = 0
         for executor in reversed(roulette_info["stored_executors"]):
             if executor.status == PositionExecutorStatus.CLOSED_BY_TAKE_PROFIT:
                 break
             else:
-                ball_number += 1
-                net_loss_usd += (executor.pnl_usd - executor.cum_fees)
+                total_closed_executors_in_roullete += 1
+                if executor.status != PositionExecutorStatus.CANCELED_BY_TIME_LIMIT:
+                    ball_number += 1
+                    net_loss_usd += (executor.pnl_usd - executor.cum_fees)
+                else:
+                    failed_entries_in_roullete += 1
 
         extra_amount = - net_loss_usd / Decimal(
             take_profit - self.taker_fee - self.maker_fee) if net_loss_usd < Decimal(
             "0") else Decimal("0")
 
-        if ball_number == 1 or extra_amount == 0:
+        if (ball_number == 1 or extra_amount == 0) and total_closed_executors_in_roullete>failed_entries_in_roullete:
             roulette_info["roulette_group_id"] += 1
             ball_number = 1
         roulette_info["ball_number"] = ball_number
