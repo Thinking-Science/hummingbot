@@ -472,17 +472,15 @@ class PositionExecutor:
         base_asset = self.trading_pair.split("-")[0]
         quote_asset = self.trading_pair.split("-")[1]
         if self.is_closed:
-            lines.extend([f"""
-| Trading Pair: {self.trading_pair} | Exchange: {self.exchange} | Side: {self.side} | Amount: {amount_in_quote:.4f} {quote_asset} - {self.amount:.4f} {base_asset}
-| Entry price: {self.entry_price:.4f}  | Close price: {self.close_price:.4f} --> PNL: {self.pnl * 100:.2f}%
-| Realized PNL: {self.pnl_usd:.4f} {quote_asset} | Total Fee: {self.cum_fees:.4f} {quote_asset} --> Net return: {(self.pnl_usd - self.cum_fees):.4f} {quote_asset}
-| Status: {self.status}
+            lines.extend([f"""Side: {self.side} | Amount: {amount_in_quote:.4f} {quote_asset} - {self.amount:.4f} {base_asset}
+ Entry price: {self.entry_price:.4f}  | Close price: {self.close_price:.4f} --> PNL: {self.pnl * 100:.2f}%
+ Realized PNL: {self.pnl_usd:.4f} {quote_asset} | Total Fee: {self.cum_fees:.4f} {quote_asset} --> Net return: {(self.pnl_usd - self.cum_fees):.4f} {quote_asset}
+ Status: {self.status}
 """])
         else:
-            lines.extend([f"""
-| Trading Pair: {self.trading_pair} | Exchange: {self.exchange} | Side: {self.side} | Amount: {amount_in_quote:.4f} {quote_asset} - {self.amount:.4f} {base_asset}
-| Entry price: {self.entry_price:.4f}  | Current price: {current_price:.4f} --> PNL: {self.pnl * 100:.2f}%
-| Unrealized PNL: {self.pnl_usd:.4f} {quote_asset} | Total Fee: {self.cum_fees:.4f} {quote_asset} --> Net return: {(self.pnl_usd - self.cum_fees):.4f} {quote_asset}
+            lines.extend([f"""Side: {self.side} | Amount: {amount_in_quote:.4f} {quote_asset} - {self.amount:.4f} {base_asset}
+Entry price: {self.entry_price:.4f}  | Current price: {current_price:.4f} --> PNL: {self.pnl * 100:.2f}%
+Unrealized PNL: {self.pnl_usd:.4f} {quote_asset} | Total Fee: {self.cum_fees:.4f} {quote_asset} --> Net return: {(self.pnl_usd - self.cum_fees):.4f} {quote_asset}
         """])
         time_scale = 67
         price_scale = 47
@@ -506,5 +504,5 @@ class PositionExecutor:
             price_bar.insert(0, f"SL:{stop_loss_price:.4f}")
             price_bar.append(f"TP:{take_profit_price:.4f}")
             lines.extend(["".join(price_bar), "\n"])
-            lines.extend(["-----------------------------------------------------------------------------------------------------------"])
+            lines.extend(["-----------------------------------------------------------------"])
         return lines
