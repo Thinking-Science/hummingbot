@@ -1,4 +1,5 @@
 import datetime
+import time
 import os
 from decimal import Decimal
 from typing import Dict
@@ -56,6 +57,9 @@ class RouletteStrategy(ScriptStrategyBase):
                                                  interval="1m", max_records=500),
             "roulette_group_id": 0,
             "ball_number": 1,
+            "trading_cash_out_time": 0.0034, #days
+            "cashing_out": False,
+            "active_trading": True, #defines if stops when ball is take profit
             "csv_path": data_path() + f"/roulette_{exchange}_{trading_pair}_{today.day:02d}-{today.month:02d}-{today.year}-{today.hour}.csv"}
 
     # Fee structure
@@ -77,6 +81,7 @@ class RouletteStrategy(ScriptStrategyBase):
         super().__init__(connectors)
         for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
             roulette_info["candles"].start()
+        self.start_moment = time.time()
 
     def on_stop(self):
         """
@@ -92,10 +97,17 @@ class RouletteStrategy(ScriptStrategyBase):
         self.clean_and_store_executors() #Stores closed position and refresh orders waiting to enter
         self.check_and_set_leverage()
         for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
+            self.set_cash_out_trigger(trading_pair,roulette_info)
+            if roulette_info['active_trading']:
+                pass
+            else:
+                continue
             if len(roulette_info["active_executors"]) < self.max_executors and roulette_info["candles"].is_ready:
                 signal, take_profit, stop_loss, indicators = self.get_signal_tp_and_sl(roulette_info)
                 if signal < self.short_threshold or signal > self.long_threshold:
                     bet = self.get_roulette_amount(trading_pair, roulette_info, take_profit) #sets ball number - roullete_id - amount+extraamount
+                    if not roulette_info['active_trading']:
+                        continue
                     position_side = PositionSide.LONG if signal > 0 else PositionSide.SHORT
                     price = self.get_entry_price(trading_pair,roulette_info,position_side) #gets best bid/ask price * buffer
                     self.logger().info(f"""
@@ -120,6 +132,16 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                         ball_number=roulette_info["ball_number"]
                     )
                     roulette_info["active_executors"].append(signal_executor)
+    def set_cash_out_trigger(self,trading_pair,roulette_info):
+        life_seconds = roulette_info['trading_cash_out_time']*24*60*60
+        if self.current_timestamp - self.start_moment >= life_seconds:
+            if not roulette_info['cashing_out']:
+                self.logger().info(f"Cashing out for {trading_pair}!")
+            roulette_info['cashing_out'] = True
+        else:
+            self.logger().info(f"{trading_pair} | Seconds for cash-out {self.current_timestamp - self.start_moment - life_seconds} seg")
+        return False
+
 
     def get_signal_tp_and_sl(self, roulette_info):
         candles_df = roulette_info["candles"].candles_df
@@ -134,9 +156,9 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         macdh = last_candle["MACDh_21_42_9"]
         macd = last_candle["MACD_21_42_9"]
         std_pct = last_candle["std_close"]
-        if bbp < 0.7 and macdh > 0 and macd < 0:
+        if bbp < 0.25 and macdh > 0 and macd < 0:
             signal_value = 1
-        elif bbp > 0.3 and macdh < 0 and macd > 0:
+        elif bbp > 0.75 and macdh < 0 and macd > 0:
             signal_value = -1
         else:
             signal_value = 0
@@ -172,6 +194,19 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                 "max_margin_usd": max_order_amount_usd / roulette_info["leverage"],
             }
         return results_by_roulette_id
+    def calculate_loosing_balls(self,stored_executors):
+        res = 0
+        current_loss_usd = 0
+        for executor in reversed(stored_executors):
+            if executor.status == PositionExecutorStatus.CLOSED_BY_TAKE_PROFIT:
+                break
+            else:
+                if executor.status == PositionExecutorStatus.CANCELED_BY_TIME_LIMIT:
+                    pass
+                else:
+                    current_loss_usd += executor.pnl_usd - executor.cum_fees
+                    res += 1
+        return res, current_loss_usd
 
     def format_status(self) -> str:
         """
@@ -183,84 +218,82 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         unrealized_pnl_usd_global = Decimal(0)
         fees_cum_usd_global = Decimal(0)
         stop_result_global = Decimal(0)
+        active_balls_global = 0
+        wating_enter_balls_global = 0
+        current_loosing_balls_global = 0
+        current_roullete_loss_usd_global = 0
         lines = []
         total_results = ["### BOT PERFORMACE ###"]
         results_per_mkt = ["\n### GAME HISTORY ###"]
-        active_roulette_per_mkt = ["\n### ACTIVE ROULLETES ###"]
         for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
-            initial_position_active_roulette_per_mkt = len(active_roulette_per_mkt)
+            active_balls = 0
+            wating_enter_balls = 0
             mkt_activity_status = ''
+            mkt_activity_status_aux = ''
+            current_loosing_balls = 0
+            max_margin_reached = 0
             pnl_usd = Decimal(0)
             un_pnl_usd = Decimal(0)
             fees_cum_usd = Decimal(0)
-            max_margin_reached = Decimal(0)
             stop_result = Decimal(0)
             lasts_roulettes_resume = ''
+            current_roullete_loss_usd = 0
+            if roulette_info['active_trading'] == True:
+                if roulette_info['cashing_out'] == True:
+                    mkt_activity_status = "CASHING OUT"
+                else:
+                    mkt_activity_status = "ACTIVE"
+            else:
+                mkt_activity_status = "DONE"
+
             if len(roulette_info["stored_executors"]) > 0:
+                current_loosing_balls, current_roullete_loss_usd = self.calculate_loosing_balls(roulette_info['stored_executors'])
+                current_loosing_balls_global += current_loosing_balls
+                current_roullete_loss_usd_global += current_roullete_loss_usd
+                if current_loosing_balls > 0:
+                    mkt_activity_status += f" | Loss Balls {current_loosing_balls}"
                 mkt_roullete_stats = self.calculate_roulette_stats(roulette_info).items()
                 for roullete_id , roullete_stat in mkt_roullete_stats:
                     pnl_usd += Decimal(roullete_stat['realized_pnl'])
                     fees_cum_usd += Decimal(roullete_stat['cum_fees'])
-                    lasts_roulettes_resume += f"|R{roullete_stat['roulette_group_id']}{roullete_stat['ball_numbers']}B{roullete_stat['net_pnl']:.4f}"
+                    lasts_roulettes_resume += str(f" | {roullete_stat['ball_numbers']}B{roullete_stat['net_pnl']:.4f} | ")
                     if Decimal(roullete_stat["max_margin_usd"]) >= max_margin_reached:
                         max_margin_reached = Decimal(roullete_stat["max_margin_usd"])
-                if pnl_usd == 0:
-                    mkt_activity_status == 'ZZZ'
-            else:
-                mkt_activity_status == 'ZZZ'
-
+            mkt_activity_status_aux = 'ZZZ'
             if len(roulette_info["active_executors"]) > 0:
-                for executor in roulette_info["active_executors"]:
-                    if Decimal(executor.amount)/Decimal(roulette_info["leverage"])>max_margin_reached:
+                for executor in reversed(roulette_info["active_executors"]):
+                    if executor.status == PositionExecutorStatus.ORDER_PLACED:
+                        wating_enter_balls += 1
+                    else:
+                        active_balls += 1
+                    if Decimal(executor.amount)*Decimal(executor.entry_price)/Decimal(roulette_info["leverage"]) > max_margin_reached:
                         max_margin_reached = Decimal(executor.amount)/Decimal(roulette_info["leverage"])
                     if executor.status == PositionExecutorStatus.ORDER_PLACED:
-                        mkt_activity_status = 'ORDER PLACED'
-                        current_price = executor.connector.get_mid_price(executor.trading_pair)
-                        amount_in_quote = executor.amount * executor.entry_price
-                        base_asset = executor.trading_pair.split("-")[0]
-                        quote_asset = executor.trading_pair.split("-")[1]
-                        active_roulette_per_mkt.extend([f"""
-{trading_pair} R{executor.roulette_group_id} | Status: {executor.status} | Ball N°{executor.ball_number}
-Side: {executor.side} | Amount: {amount_in_quote:.4f} {quote_asset} - {executor.amount:.4f} {base_asset}
-Entry price: {executor.entry_price:.4f}  | Current price: {current_price:.4f}"""])
-                        time_scale = 67
-                        seconds_remaining = (executor.position_config.timestamp + roulette_info['order_placed_time_limit']*60 - executor._strategy.current_timestamp)
-                        seconds_remaining = max(0, seconds_remaining)
-                        life_seconds_conf = roulette_info['order_placed_time_limit']*60
-                        time_progress = (life_seconds_conf - seconds_remaining) / life_seconds_conf
-                        time_bar = "".join(
-                            ['*' if i < time_scale * time_progress else '-' for i in range(time_scale)])
-                        active_roulette_per_mkt.extend([f"Refresh time: {time_bar}"])
-                        if roulette_info["candles"].is_ready:
-                            signal, take_profit, stop_loss, indicators = self.get_signal_tp_and_sl(roulette_info)
-                            active_roulette_per_mkt.extend([f"""
-Market Data: Signal: {signal} | Take Profit: {take_profit:.4f} | Stop Loss: {stop_loss:.4f}
-BB%: {indicators[0]:.2f} | MACDh: {indicators[1]:.6f} | MACD: {indicators[2]:.6f}"""])
-                        else:
-                            active_roulette_per_mkt.extend(f"No data collected.")
+                        mkt_activity_status_aux = 'WAITING ENTER'
                     else:
-                        mkt_activity_status == 'PLAYING'
+                        mkt_activity_status_aux = 'PLAYING'
                         un_pnl_usd += Decimal(executor.pnl_usd)
                         fees_cum_usd += Decimal(executor.cum_fees)
                         current_price = self.connectors[self.exchange].get_mid_price(trading_pair)
-                        stop_result = Decimal(executor.pnl_usd) - Decimal(executor.cum_fees) - Decimal(self.taker_fee)*Decimal(executor.amount)/Decimal(current_price)
-                        active_roulette_per_mkt.extend([f"""
-{trading_pair} R{executor.roulette_group_id} | Status: {executor.status}
-Ball N°{executor.ball_number} | Runaway: {stop_result:.4f} U$D"""])
-                        active_roulette_per_mkt.extend(executor.to_format_status())
-            results_per_mkt.insert(1, f"""{trading_pair} | {mkt_activity_status} | PNL: {pnl_usd:.4f} | Fees: {fees_cum_usd:.4f}
-Net result: {(pnl_usd - fees_cum_usd):.4f} | Max Margin {max_margin_reached:.4f} | Runaway: {stop_result:.4f} (USD)""")
+                        stop_result = Decimal(current_roullete_loss_usd) + Decimal(executor.pnl_usd) - Decimal(executor.cum_fees) - Decimal(self.taker_fee)*Decimal(executor.amount)*Decimal(current_price)
+            mkt_activity_status += f" | {mkt_activity_status_aux}"
+            results_per_mkt.insert(1, f"""\n-->{trading_pair} | {mkt_activity_status} \nPNL: {pnl_usd:.4f} | Fees: {fees_cum_usd:.4f}
+Net result: {(pnl_usd - fees_cum_usd):.4f}\nMax Margin {max_margin_reached:.4f} | Runaway: {stop_result:.4f} (USD)""")
             if lasts_roulettes_resume != '':
-                results_per_mkt.insert(2, [f"LAST GAMES:{lasts_roulettes_resume}"])
+                results_per_mkt.insert(2, f"**-LAST GAMES-**\n{lasts_roulettes_resume}")
             unrealized_pnl_usd_global += un_pnl_usd
             stop_result_global += stop_result
             fees_cum_usd_global += fees_cum_usd
             realized_pnl_usd_global += pnl_usd
-        total_results.insert(1, f"Realized PNL: {realized_pnl_usd_global:.4f} | Fees cum: {fees_cum_usd_global:.4f} | Net result: {(realized_pnl_usd_global - fees_cum_usd_global):.4f} U$D")
-        total_results.insert(2, f"Unrealized PNL: {unrealized_pnl_usd_global:.4f} | Runaway: {stop_result_global:.4f} U$D")
-        lines.extend(total_results)
+            active_balls_global += active_balls
+            wating_enter_balls_global += wating_enter_balls
+        total_results.insert(1, f"Realized PNL: {realized_pnl_usd_global:.4f} | Fees cum: {fees_cum_usd_global:.4f}")
+        total_results.insert(2, f"Unrealized PNL: {unrealized_pnl_usd_global:.4f} U$D | Playing: {active_balls_global} - Order placed:{wating_enter_balls_global}")
+        total_results.insert(3, f"Losing: {current_loosing_balls_global} Balls | {current_roullete_loss_usd_global:.4f} U$D")
+        total_results.insert(4, f"Net result: {(realized_pnl_usd_global - fees_cum_usd_global):.4f} | Runaway: {stop_result_global:.4f} U$D")
+        total_results.insert(5, f"Stop net result: {(realized_pnl_usd_global - fees_cum_usd_global + stop_result_global):.4f} U$D")
         lines.extend(results_per_mkt)
-        lines.extend(active_roulette_per_mkt)
+        lines.extend(total_results)
         return "\n".join(lines)
 
     def clean_and_store_executors(self):
@@ -374,8 +407,12 @@ Net result: {(pnl_usd - fees_cum_usd):.4f} | Max Margin {max_margin_reached:.4f}
         net_loss_usd = 0
         ball_number = 1
         failed_entries_in_roullete = 0
+        if len(roulette_info["stored_executors"]) == 0 and len(roulette_info["active_executors"]) == 0 and roulette_info['cashing_out']:
+            roulette_info['active_trading'] = False
         for executor in reversed(roulette_info["stored_executors"]):
             if executor.status == PositionExecutorStatus.CLOSED_BY_TAKE_PROFIT:
+                if net_loss_usd <= 0 and roulette_info['cashing_out']:
+                    roulette_info['active_trading'] = False
                 break
             else:
                 if executor.status != PositionExecutorStatus.CANCELED_BY_TIME_LIMIT:
