@@ -23,6 +23,8 @@ class SignalExecutor(PositionExecutor):
         self.signal_value = signal_value
         self.roulette_group_id = roulette_group_id
         self.ball_number = ball_number
+        self.cashing_out = False
+        self.active_trading = True
 
 
 class RouletteStrategy(ScriptStrategyBase):
@@ -106,8 +108,6 @@ class RouletteStrategy(ScriptStrategyBase):
                 signal, take_profit, stop_loss, indicators = self.get_signal_tp_and_sl(roulette_info)
                 if signal < self.short_threshold or signal > self.long_threshold:
                     bet = self.get_roulette_amount(trading_pair, roulette_info, take_profit) #sets ball number - roullete_id - amount+extraamount
-                    if not roulette_info['active_trading']:
-                        continue
                     position_side = PositionSide.LONG if signal > 0 else PositionSide.SHORT
                     price = self.get_entry_price(trading_pair,roulette_info,position_side) #gets best bid/ask price * buffer
                     self.logger().info(f"""
@@ -140,6 +140,13 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
             roulette_info['cashing_out'] = True
         else:
             self.logger().info(f"{trading_pair} | Seconds for cash-out {self.current_timestamp - self.start_moment - life_seconds} seg")
+        if roulette_info['cashing_out']:
+            current_loosing_balls, current_roullete_loss_usd = self.calculate_loosing_balls(roulette_info['stored_executors'])
+            if len(roulette_info['active_executors']) == 0:
+                if current_loosing_balls == 0:
+                    roulette_info['active_trading'] = False
+
+
         return False
 
 
@@ -204,7 +211,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                 if executor.status == PositionExecutorStatus.CANCELED_BY_TIME_LIMIT:
                     pass
                 else:
-                    current_loss_usd += executor.pnl_usd - executor.cum_fees
+                    current_loss_usd += (executor.pnl_usd - executor.cum_fees)
                     res += 1
         return res, current_loss_usd
 
@@ -223,7 +230,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         current_loosing_balls_global = 0
         current_roullete_loss_usd_global = 0
         lines = []
-        total_results = ["### BOT PERFORMACE ###"]
+        total_results = ["\n\n### BOT PERFORMACE ###"]
         results_per_mkt = ["\n### GAME HISTORY ###"]
         for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
             active_balls = 0
@@ -238,8 +245,8 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
             stop_result = Decimal(0)
             lasts_roulettes_resume = ''
             current_roullete_loss_usd = 0
-            if roulette_info['active_trading'] == True:
-                if roulette_info['cashing_out'] == True:
+            if roulette_info['active_trading']:
+                if roulette_info['cashing_out']:
                     mkt_activity_status = "CASHING OUT"
                 else:
                     mkt_activity_status = "ACTIVE"
@@ -407,13 +414,9 @@ Net result: {(pnl_usd - fees_cum_usd):.4f}\nMax Margin {max_margin_reached:.4f} 
         net_loss_usd = 0
         ball_number = 1
         failed_entries_in_roullete = 0
-        if len(roulette_info["stored_executors"]) == 0 and len(roulette_info["active_executors"]) == 0 and roulette_info['cashing_out']:
-            roulette_info['active_trading'] = False
         for executor in reversed(roulette_info["stored_executors"]):
             if executor.status == PositionExecutorStatus.CLOSED_BY_TAKE_PROFIT:
-                if net_loss_usd <= 0 and roulette_info['cashing_out']:
-                    roulette_info['active_trading'] = False
-                break
+                pass
             else:
                 if executor.status != PositionExecutorStatus.CANCELED_BY_TIME_LIMIT:
                     ball_number += 1
