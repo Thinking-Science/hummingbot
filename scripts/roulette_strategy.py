@@ -33,7 +33,7 @@ class RouletteStrategy(ScriptStrategyBase):
     IMPORTANT: Binance perpetual has to be in Single Asset Mode, soon we are going to support Multi Asset Mode.
     """
     # Define the trading pair and exchange that we want to use and the csv where we are going to store the entries
-    trading_pairs = ["DODO-BUSD","XRP-BUSD","AMB-BUSD","FTM-BUSD","GALA-BUSD","TLM-BUSD","LEVER-BUSD","TRX-BUSD","DOGE-BUSD","AGIX-BUSD"]
+    trading_pairs = ["DODO-BUSD","XRP-BUSD","AMB-BUSD","FTM-BUSD","GALA-BUSD","TRX-BUSD","DOGE-BUSD","AGIX-BUSD"]
     exchange = "binance_perpetual"
 
     today = datetime.datetime.today()
@@ -47,9 +47,9 @@ class RouletteStrategy(ScriptStrategyBase):
             "max_stop_loss": 0.002,
             "take_profit_multiplier": 1,
             "time_limit": 60 * 55,
-            "order_placed_time_limit": 1,
+            "order_placed_time_limit": 0.5,
             "limit_order_price_buffer": 0.001,
-            "game_over_usd": 20,
+            "game_over_usd": 6,
             "leverage": 20,
             "initial_order_amount_usd": Decimal("6"),
             "active_executors": [],
@@ -218,19 +218,23 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
     def sort_mkt_results(self, all_mkt_result):
         sorted_lines = []
         lossing_balls_composition = ''
-        loosing_mkts = filter(lambda x: x['current_loosing_balls'] > 0, all_mkt_result)
-        loosing_mkts = sorted(loosing_mkts, key=lambda x: -x['current_loosing_balls'])
+        # Filtrar los elementos de all_mkt_result que tienen current_loosing_balls > 0
+        loosing_mkts = filter(lambda x: x[list(x.keys())[0]]['current_loosing_balls'] > 0, all_mkt_result)
+        # Ordenar la lista filtrada por current_loosing_balls en orden descendente
+        loosing_mkts = sorted(loosing_mkts, key=lambda x: -x[list(x.keys())[0]]['current_loosing_balls'])
         for mkt in loosing_mkts:
             trading_pair = list(mkt.keys())[0]
             trading_pair_parts = trading_pair.split('-')
-            lossing_balls_composition += f"{trading_pair_parts[0]} {mkt['current_loosing_balls']} B | "
-            sorted_lines.extend(mkt['lines_format_status'])
-        wining_mkts = filter(lambda x: x['current_loosing_balls'] == 0, all_mkt_result)
-        wining_mkts = sorted(wining_mkts, key=lambda x: -x['net_usd'])
+            lossing_balls_composition += f"{trading_pair_parts[0]} {mkt[trading_pair]['current_loosing_balls']} B | "
+            sorted_lines.extend(mkt[trading_pair]['lines_format_status'])
+        wining_mkts = filter(lambda x: x[list(x.keys())[0]]['current_loosing_balls'] == 0, all_mkt_result)
+        wining_mkts = sorted(wining_mkts, key=lambda x: -x[list(x.keys())[0]]['net_usd'])
         for mkt in wining_mkts:
-            sorted_lines.extend(mkt['lines_format_status'])
+            sorted_lines.extend(list(mkt.values())[0]['lines_format_status'])
         lossing_balls_composition = lossing_balls_composition[:-1]
         return sorted_lines, lossing_balls_composition
+
+
     def format_status(self) -> str:
         """
         Displays the three candlesticks involved in the script with RSI, BBANDS and EMA.
@@ -342,7 +346,6 @@ Net result: {(pnl_usd - fees_cum_usd):.4f}\nMax Margin {max_margin_reached:.4f} 
         total_results.insert(1, f"Realized PNL: {realized_pnl_usd_global:.4f} | Fees cum: {fees_cum_usd_global:.4f}")
         total_results.insert(2, f"Net result: {(realized_pnl_usd_global - fees_cum_usd_global):.4f} | {win_roulletes_global:.4f} WINS\n")
         total_results.insert(3, f"Unrealized PNL: {unrealized_pnl_usd_global:.4f}U$D\nPlaying: {active_balls_global} - Order placed:{wating_enter_balls_global}\n")
-        total_results.insert(4,)
         if lossing_balls_composition != '':
             total_results.insert(5, f"Losing: {current_loosing_balls_global} Balls | {current_roullete_loss_usd_global:.4f} U$D\n {lossing_balls_composition}")
         else:
