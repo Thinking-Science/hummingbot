@@ -44,7 +44,7 @@ class RouletteStrategy(ScriptStrategyBase):
     for trading_pair in trading_pairs:
         roulette_by_trading_pair[trading_pair] = {
             "stop_loss_multiplier": 0.5,
-            "max_stop_loss": 0.005,
+            "max_stop_loss": 0.002,
             "take_profit_multiplier": 1,
             "time_limit": 60 * 55,
             "order_placed_time_limit": 1,
@@ -215,6 +215,22 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                     res += 1
         return res, current_loss_usd
 
+    def sort_mkt_results(self, all_mkt_result):
+        sorted_lines = []
+        lossing_balls_composition = ''
+        loosing_mkts = filter(lambda x: x['current_loosing_balls'] > 0, all_mkt_result)
+        loosing_mkts = sorted(loosing_mkts, key=lambda x: -x['current_loosing_balls'])
+        for mkt in loosing_mkts:
+            trading_pair = list(mkt.keys())[0]
+            trading_pair_parts = trading_pair.split('-')
+            lossing_balls_composition += f"{trading_pair_parts[0]} {mkt['current_loosing_balls']} B | "
+            sorted_lines.extend(mkt['lines_format_status'])
+        wining_mkts = filter(lambda x: x['current_loosing_balls'] == 0, all_mkt_result)
+        wining_mkts = sorted(wining_mkts, key=lambda x: -x['net_usd'])
+        for mkt in wining_mkts:
+            sorted_lines.extend(mkt['lines_format_status'])
+        lossing_balls_composition = lossing_balls_composition[:-1]
+        return sorted_lines, lossing_balls_composition
     def format_status(self) -> str:
         """
         Displays the three candlesticks involved in the script with RSI, BBANDS and EMA.
@@ -229,10 +245,12 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         wating_enter_balls_global = 0
         current_loosing_balls_global = 0
         current_roullete_loss_usd_global = 0
+        win_roulletes_global = 0
         lines = []
+        all_mkt_result = []
         total_results = ["\n\n### BOT PERFORMACE ###"]
-        results_per_mkt = ["\n### GAME HISTORY ###"]
         for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
+            results_per_mkt = []
             active_balls = 0
             wating_enter_balls = 0
             mkt_activity_status = ''
@@ -245,6 +263,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
             stop_result = Decimal(0)
             lasts_roulettes_resume = ''
             current_roullete_loss_usd = 0
+            win_roulettes = 0
             if roulette_info['active_trading']:
                 if roulette_info['cashing_out']:
                     mkt_activity_status = "CASHING OUT"
@@ -257,9 +276,11 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                 current_loosing_balls, current_roullete_loss_usd = self.calculate_loosing_balls(roulette_info['stored_executors'])
                 current_loosing_balls_global += current_loosing_balls
                 current_roullete_loss_usd_global += current_roullete_loss_usd
+                stop_result = Decimal(current_roullete_loss_usd)
                 if current_loosing_balls > 0:
-                    mkt_activity_status += f" | Loss Balls {current_loosing_balls}"
+                    mkt_activity_status += f" | FAILING {current_loosing_balls}"
                 mkt_roullete_stats = self.calculate_roulette_stats(roulette_info).items()
+                win_roulettes = len(mkt_roullete_stats)
                 for roullete_id , roullete_stat in mkt_roullete_stats:
                     pnl_usd += Decimal(roullete_stat['realized_pnl'])
                     fees_cum_usd += Decimal(roullete_stat['cum_fees'])
@@ -267,6 +288,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                     if Decimal(roullete_stat["max_margin_usd"]) >= max_margin_reached:
                         max_margin_reached = Decimal(roullete_stat["max_margin_usd"])
             mkt_activity_status_aux = 'ZZZ'
+
             if len(roulette_info["active_executors"]) > 0:
                 for executor in reversed(roulette_info["active_executors"]):
                     if executor.status == PositionExecutorStatus.ORDER_PLACED:
@@ -282,24 +304,55 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                         un_pnl_usd += Decimal(executor.pnl_usd)
                         fees_cum_usd += Decimal(executor.cum_fees)
                         current_price = self.connectors[self.exchange].get_mid_price(trading_pair)
-                        stop_result = Decimal(current_roullete_loss_usd) + Decimal(executor.pnl_usd) - Decimal(executor.cum_fees) - Decimal(self.taker_fee)*Decimal(executor.amount)*Decimal(current_price)
+                        stop_result += Decimal(executor.pnl_usd) - Decimal(executor.cum_fees) - Decimal(self.taker_fee)*Decimal(executor.amount)*Decimal(current_price)
             mkt_activity_status += f" | {mkt_activity_status_aux}"
             results_per_mkt.insert(1, f"""\n-->{trading_pair} | {mkt_activity_status} \nPNL: {pnl_usd:.4f} | Fees: {fees_cum_usd:.4f}
 Net result: {(pnl_usd - fees_cum_usd):.4f}\nMax Margin {max_margin_reached:.4f} | Runaway: {stop_result:.4f} (USD)""")
             if lasts_roulettes_resume != '':
                 results_per_mkt.insert(2, f"**-LAST GAMES-**\n{lasts_roulettes_resume}")
+            vals = {}
+            vals[trading_pair] = {
+                'un_pnl_usd': un_pnl_usd,
+                'stop_result': stop_result,
+                'fees_cum_usd': fees_cum_usd,
+                'pnl_usd': pnl_usd,
+                'net_usd': pnl_usd - fees_cum_usd,
+                'active_balls': active_balls,
+                'wating_enter_balls': wating_enter_balls,
+                'win_roulettes': win_roulettes,
+                'lines_format_status': results_per_mkt,
+                'current_loosing_balls' : current_loosing_balls,
+                'current_roullete_loss_usd' : current_roullete_loss_usd,
+            }
+            all_mkt_result.append(vals)
+            sorted_lines, lossing_balls_composition = self.sort_mkt_results(all_mkt_result)
             unrealized_pnl_usd_global += un_pnl_usd
             stop_result_global += stop_result
             fees_cum_usd_global += fees_cum_usd
             realized_pnl_usd_global += pnl_usd
             active_balls_global += active_balls
             wating_enter_balls_global += wating_enter_balls
+            win_roulletes_global += win_roulettes
+            remaining_time_txt = ''
+            life_seconds = roulette_info['trading_cash_out_time'] * 24 * 60 * 60
+            if self.current_timestamp - self.start_moment >= life_seconds:
+                remaining_time_txt = "CASH OUT TRIGGERED"
+            else:
+                remaining_time_txt = f"Cash-out {self.current_timestamp - self.start_moment - life_seconds} seg"
         total_results.insert(1, f"Realized PNL: {realized_pnl_usd_global:.4f} | Fees cum: {fees_cum_usd_global:.4f}")
-        total_results.insert(2, f"Unrealized PNL: {unrealized_pnl_usd_global:.4f} U$D | Playing: {active_balls_global} - Order placed:{wating_enter_balls_global}")
-        total_results.insert(3, f"Losing: {current_loosing_balls_global} Balls | {current_roullete_loss_usd_global:.4f} U$D")
-        total_results.insert(4, f"Net result: {(realized_pnl_usd_global - fees_cum_usd_global):.4f} | Runaway: {stop_result_global:.4f} U$D")
-        total_results.insert(5, f"Stop net result: {(realized_pnl_usd_global - fees_cum_usd_global + stop_result_global):.4f} U$D")
-        lines.extend(results_per_mkt)
+        total_results.insert(2, f"Net result: {(realized_pnl_usd_global - fees_cum_usd_global):.4f} | {win_roulletes_global:.4f} WINS\n")
+        total_results.insert(3, f"Unrealized PNL: {unrealized_pnl_usd_global:.4f}U$D\nPlaying: {active_balls_global} - Order placed:{wating_enter_balls_global}\n")
+        total_results.insert(4,)
+        if lossing_balls_composition != '':
+            total_results.insert(5, f"Losing: {current_loosing_balls_global} Balls | {current_roullete_loss_usd_global:.4f} U$D\n {lossing_balls_composition}")
+        else:
+            total_results.insert(5, f"(NO LOOSING ROULETTES)\n")
+        total_results.insert(6, f"Runaway: {stop_result_global:.4f} U$D")
+        total_results.insert(7, f"Stop net result: {(realized_pnl_usd_global - fees_cum_usd_global + stop_result_global):.4f} U$D")
+        lines.extend("\n### TIME FOR CASHOUT ###")
+        lines.extend(remaining_time_txt)
+        lines.extend("\n### BOT PERFORMACE ###")
+        lines.extend(sorted_lines)
         lines.extend(total_results)
         return "\n".join(lines)
 
@@ -385,15 +438,17 @@ Net result: {(pnl_usd - fees_cum_usd):.4f}\nMax Margin {max_margin_reached:.4f} 
                              order_type=OrderType.MARKET,
                              price=connector.get_mid_price(position.trading_pair),
                              position_action=PositionAction.CLOSE)
-    def is_game_over(self,betting_amount, trading_pair, roulette_info):
+    def is_game_over(self,trading_pair, roulette_info):
+        res = False
         game_over_usd = roulette_info["game_over_usd"]
-        net_loss_amount = Decimal(betting_amount)*(Decimal(roulette_info["max_stop_loss"]) + Decimal(self.taker_fee))
-        if net_loss_amount >= game_over_usd:
-            self.notify_hb_app_with_timestamp(f"Game over! Max Loss reached {trading_pair}: {net_loss_amount:.4f} U$D")
-            self.logger().info(f"Game over! Max Loss reached {trading_pair}: {net_loss_amount:.4f} U$D")
-            return True
-        else:
-            return False
+        current_loosing_balls, current_roullete_loss_usd = self.calculate_loosing_balls(roulette_info['stored_executors'])
+        if current_roullete_loss_usd < 0:
+            if abs(current_roullete_loss_usd) >= abs(game_over_usd):
+                self.notify_hb_app_with_timestamp(f"Game over! Max Loss reached {trading_pair}: {current_roullete_loss_usd:.4f} U$D")
+                self.logger().info(f"Game over! Max Loss reached {trading_pair}: {current_roullete_loss_usd:.4f} U$D")
+                res = True
+        return res
+
     def is_margin_enough(self,betting_amount, trading_pair, roulette_info):
         quote_balance = self.connectors[self.exchange].get_balance(trading_pair.split("-")[-1])
         if betting_amount * Decimal("1.01") < quote_balance * Decimal(str(roulette_info["leverage"])):
@@ -431,7 +486,7 @@ Net result: {(pnl_usd - fees_cum_usd):.4f}\nMax Margin {max_margin_reached:.4f} 
         if extra_amount == 0:
             ball_number = 1
         amount = roulette_info["initial_order_amount_usd"] + extra_amount
-        if self.is_game_over(betting_amount=amount, trading_pair=trading_pair, roulette_info=roulette_info):
+        if self.is_game_over(trading_pair=trading_pair, roulette_info=roulette_info):
             ball_number = 1
             amount = roulette_info["initial_order_amount_usd"]
         roulette_info["ball_number"] = ball_number
