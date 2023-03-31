@@ -462,7 +462,6 @@ class PositionExecutor:
             trading_pair=self.trading_pair,
             order_id=self._open_order.order_id
         )
-        self.status = PositionExecutorStatus.CANCELED_BY_TIME_LIMIT
         self.logger().info("Removing open order triggered by the strategy")
 
     def to_format_status(self):
