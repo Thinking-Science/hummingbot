@@ -33,7 +33,7 @@ class RouletteStrategy(ScriptStrategyBase):
     IMPORTANT: Binance perpetual has to be in Single Asset Mode, soon we are going to support Multi Asset Mode.
     """
     # Define the trading pair and exchange that we want to use and the csv where we are going to store the entries
-    trading_pairs = ["DODO-BUSD","XRP-BUSD","AMB-BUSD","FTM-BUSD","GALA-BUSD","TRX-BUSD","DOGE-BUSD","AGIX-BUSD"]
+    trading_pairs = ["DODO-BUSD","PHB-BUSD","XRP-BUSD","AMB-BUSD","FTM-BUSD","GALA-BUSD","TRX-BUSD","DOGE-BUSD","AGIX-BUSD"]
     exchange = "binance_perpetual"
 
     today = datetime.datetime.today()
@@ -48,10 +48,10 @@ class RouletteStrategy(ScriptStrategyBase):
             "take_profit_multiplier": 1,
             "time_limit": 60 * 55,
             "order_placed_time_limit": 0.5,
-            "limit_order_price_buffer": 0.001,
+            "limit_order_price_buffer": 0.0003,
             "game_over_usd": 6,
             "leverage": 20,
-            "initial_order_amount_usd": Decimal("6"),
+            "initial_order_amount_usd": Decimal("20"),
             "active_executors": [],
             "stored_executors": [],
             "candles": CandlesFactory.get_candle(connector=exchange,
@@ -59,7 +59,7 @@ class RouletteStrategy(ScriptStrategyBase):
                                                  interval="1m", max_records=500),
             "roulette_group_id": 0,
             "ball_number": 1,
-            "trading_cash_out_time": 0.0034, #days
+            "trading_cash_out_time": 0.166, #days
             "cashing_out": False,
             "active_trading": True, #defines if stops when ball is take profit
             "csv_path": data_path() + f"/roulette_{exchange}_{trading_pair}_{today.day:02d}-{today.month:02d}-{today.year}-{today.hour}.csv"}
@@ -139,14 +139,12 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                 self.logger().info(f"Cashing out for {trading_pair}!")
             roulette_info['cashing_out'] = True
         else:
-            self.logger().info(f"{trading_pair} | Seconds for cash-out {self.current_timestamp - self.start_moment - life_seconds} seg")
+            pass
         if roulette_info['cashing_out']:
             current_loosing_balls, current_roullete_loss_usd = self.calculate_loosing_balls(roulette_info['stored_executors'])
             if len(roulette_info['active_executors']) == 0:
                 if current_loosing_balls == 0:
                     roulette_info['active_trading'] = False
-
-
         return False
 
 
@@ -284,7 +282,8 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
                 if current_loosing_balls > 0:
                     mkt_activity_status += f" | FAILING {current_loosing_balls}"
                 mkt_roullete_stats = self.calculate_roulette_stats(roulette_info).items()
-                win_roulettes = len(mkt_roullete_stats)
+                win_roulettes = len([x for x in roulette_info["stored_executors"] if x.status == PositionExecutorStatus.CLOSED_BY_TAKE_PROFIT]) 
+
                 for roullete_id , roullete_stat in mkt_roullete_stats:
                     pnl_usd += Decimal(roullete_stat['realized_pnl'])
                     fees_cum_usd += Decimal(roullete_stat['cum_fees'])
@@ -352,9 +351,8 @@ Net result: {(pnl_usd - fees_cum_usd):.4f}\nMax Margin {max_margin_reached:.4f} 
             total_results.insert(5, f"(NO LOOSING ROULETTES)\n")
         total_results.insert(6, f"Runaway: {stop_result_global:.4f} U$D")
         total_results.insert(7, f"Stop net result: {(realized_pnl_usd_global - fees_cum_usd_global + stop_result_global):.4f} U$D")
-        lines.extend("\n### TIME FOR CASHOUT ###")
-        lines.extend(remaining_time_txt)
-        lines.extend("\n### BOT PERFORMACE ###")
+        lines.append(f"\n### TIME FOR CASHOUT ###")
+        lines.append(remaining_time_txt)
         lines.extend(sorted_lines)
         lines.extend(total_results)
         return "\n".join(lines)
