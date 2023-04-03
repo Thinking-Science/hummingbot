@@ -48,18 +48,21 @@ class RouletteStrategy(ScriptStrategyBase):
             "take_profit_multiplier": 1,
             "time_limit": 60 * 55,
             "order_placed_time_limit": 0.5,
-            "limit_order_price_buffer": 0.0001,
+            "limit_order_price_buffer": 0.00001,
             "game_over_usd": 6,
             "leverage": 20,
-            "initial_order_amount_usd": Decimal("20"),
+            "initial_order_amount_usd": Decimal("50"),
             "active_executors": [],
             "stored_executors": [],
             "candles": CandlesFactory.get_candle(connector=exchange,
                                                  trading_pair=trading_pair,
                                                  interval="3m", max_records=500),
+            "candles_1m": CandlesFactory.get_candle(connector=exchange,
+                                                 trading_pair=trading_pair,
+                                                 interval="1m", max_records=500),                 
             "roulette_group_id": 0,
             "ball_number": 1,
-            "trading_cash_out_time": 0.166, #days
+            "trading_cash_out_time": 0.25, #days
             "cashing_out": False,
             "active_trading": True, #defines if stops when ball is take profit
             "csv_path": data_path() + f"/roulette_{exchange}_{trading_pair}_{today.day:02d}-{today.month:02d}-{today.year}-{today.hour}.csv"}
@@ -83,6 +86,7 @@ class RouletteStrategy(ScriptStrategyBase):
         super().__init__(connectors)
         for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
             roulette_info["candles"].start()
+            roulette_info["candles_1m"].start()
         self.start_moment = time.time()
 
     def on_stop(self):
@@ -94,6 +98,7 @@ class RouletteStrategy(ScriptStrategyBase):
         self.close_open_positions()
         for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
             roulette_info["candles"].stop()
+            roulette_info["candles_1m"].stop()
 
     def on_tick(self):
         self.clean_and_store_executors() #Stores closed position and refresh orders waiting to enter
@@ -104,8 +109,8 @@ class RouletteStrategy(ScriptStrategyBase):
                 pass
             else:
                 continue
-            if len(roulette_info["active_executors"]) < self.max_executors and roulette_info["candles"].is_ready:
-                signal, take_profit, stop_loss, indicators = self.get_signal_tp_and_sl(roulette_info)
+            if len(roulette_info["active_executors"]) < self.max_executors and roulette_info["candles"].is_ready and roulette_info['candles_1m'].is_ready:
+                signal, take_profit, stop_loss, indicators = self.get_signal_tp_and_sl(trading_pair,roulette_info)
                 if signal < self.short_threshold or signal > self.long_threshold:
                     bet = self.get_roulette_amount(trading_pair, roulette_info, take_profit) #sets ball number - roullete_id - amount+extraamount
                     position_side = PositionSide.LONG if signal > 0 else PositionSide.SHORT
@@ -148,7 +153,7 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         return False
 
 
-    def get_signal_tp_and_sl(self, roulette_info):
+    def get_signal_tp_and_sl(self, trading_pair, roulette_info):
         candles_df = roulette_info["candles"].candles_df
         # Let's add some technical indicators
         candles_df.ta.bbands(length=100, append=True)
@@ -156,20 +161,40 @@ Amount: {bet} | Take Profit: {take_profit} | Stop Loss: {stop_loss}
         candles_df["std"] = candles_df["close"].rolling(100).std()
         candles_df["mean"] = candles_df["close"].rolling(100).mean()
         candles_df["std_close"] = candles_df["std"] / candles_df["close"]
+        
         last_candle = candles_df.iloc[-1]
+
         bbp = last_candle["BBP_100_2.0"]
         macdh = last_candle["MACDh_21_42_9"]
         macd = last_candle["MACD_21_42_9"]
         std_pct = last_candle["std_close"]
-        if bbp < 0.25 and macdh > 0 and macd < 0:
+        
+        candles_1m_df = roulette_info["candles_1m"].candles_df
+        candles_1m_df.ta.bbands(length=100, append=True)
+        candles_1m_df.ta.macd(fast=21, slow=42, signal=9, append=True)
+        candles_1m_df["std"] = candles_1m_df["close"].rolling(100).std()
+        candles_1m_df["mean"] = candles_1m_df["close"].rolling(100).mean()
+        candles_1m_df["std_close"] = candles_1m_df["std"] / candles_1m_df["close"]
+        last_candle = candles_1m_df.iloc[-1]
+        max_bbands_width = (candles_1m_df['BBU_100_2.0'] - candles_1m_df['BBL_100_2.0']).max()
+        actual_bbands_width = (last_candle['BBU_100_2.0'] - last_candle['BBL_100_2.0']).mean()
+        bbands_perc=actual_bbands_width/max_bbands_width
+
+        bbp_1m = last_candle["BBP_100_2.0"]
+        macdh_1m = last_candle["MACDh_21_42_9"]
+        macd_1m = last_candle["MACD_21_42_9"]
+
+        std_pct_1m = last_candle["std_close"]
+               
+        if bbp < 0.25 and macdh > 0 and macd < 0 and macdh_1m>0 and bbands_perc>=0.6:
             signal_value = 1
-        elif bbp > 0.75 and macdh < 0 and macd > 0:
+        elif bbp > 0.75 and macdh < 0 and macd > 0 and macdh_1m < 0 and bbands_perc>=0.6:
             signal_value = -1
         else:
             signal_value = 0
 
-        take_profit = std_pct * roulette_info["take_profit_multiplier"]
-        stop_loss = min(roulette_info["stop_loss_multiplier"], std_pct * 0.5)
+        take_profit = min(std_pct_1m,std_pct) * roulette_info["take_profit_multiplier"]
+        stop_loss = min(roulette_info["max_stop_loss"],roulette_info["stop_loss_multiplier"]*min(std_pct_1m,std_pct))
         indicators = [bbp, macdh, macd]
         return signal_value, take_profit, stop_loss, indicators
 
@@ -480,8 +505,11 @@ Net result: {(pnl_usd - fees_cum_usd):.4f}\nMax Margin {max_margin_reached:.4f} 
         net_loss_usd = 0
         ball_number = 1
         failed_entries_in_roullete = 0
+        current_roulette_group_id = False
         for executor in reversed(roulette_info["stored_executors"]):
-            if executor.status == PositionExecutorStatus.CLOSED_BY_TAKE_PROFIT:
+            if not current_roulette_group_id:
+                current_roulette_group_id = executor.roulette_group_id
+            if executor.status == PositionExecutorStatus.CLOSED_BY_TAKE_PROFIT or current_roulette_group_id != executor.roulette_group_id:
                 pass
             else:
                 if executor.status != PositionExecutorStatus.CANCELED_BY_TIME_LIMIT:
@@ -494,11 +522,14 @@ Net result: {(pnl_usd - fees_cum_usd):.4f}\nMax Margin {max_margin_reached:.4f} 
             "0") else Decimal("0")
         if ball_number == 1 and failed_entries_in_roullete == 0:
             roulette_info["roulette_group_id"] += 1
-        if extra_amount == 0:
+        elif extra_amount == 0:
             ball_number = 1
+            roulette_info["roulette_group_id"] += 1
+
         amount = roulette_info["initial_order_amount_usd"] + extra_amount
         if self.is_game_over(trading_pair=trading_pair, roulette_info=roulette_info):
             ball_number = 1
+            roulette_info["roulette_group_id"] += 1
             amount = roulette_info["initial_order_amount_usd"]
         roulette_info["ball_number"] = ball_number
         if not self.is_margin_enough(betting_amount=amount, trading_pair=trading_pair, roulette_info=roulette_info):
