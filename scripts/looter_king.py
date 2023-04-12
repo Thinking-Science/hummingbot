@@ -229,9 +229,11 @@ class LooterKing(ScriptStrategyBase):
             max_stop_loss = 0
             take_profit = 0
             std = 0
+            signal = 0
             runaway = Decimal("0")
             if len(roulette_info["active_roulettes"]) > 0:
                 current_roulette = roulette_info["active_roulettes"][-1]
+                signal = current_roulette.signal
                 game_over_usd = current_roulette.game_over_usd
                 max_stop_loss = current_roulette._roulette_config.max_stop_loss
                 stop_loss = current_roulette.stop_loss
@@ -259,6 +261,7 @@ class LooterKing(ScriptStrategyBase):
 |Net unrealized PNL: {unrealized_net_pnl:.4f}
 |Game over USD: {game_over_usd:.4f}
 |Runaway: {runaway:.4f}
+|Signal: {signal}
 |Stop Loss: {stop_loss:.4f}
 |Take Profit: {take_profit:.4f}
 |STD Mean: {std:.4f}
