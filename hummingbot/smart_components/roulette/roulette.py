@@ -29,12 +29,13 @@ class RouletteConfig(BaseModel):
 
 
 class RouletteStatus(Enum):
-    ACTIVE = 1
-    PAUSED = 2
-    CLOSED_BY_LOOT = 3
-    CLOSED_BY_EARLY_LOOT = 4
-    CLOSED_BY_GAME_OVER = 5
-    CLOSED_BY_COMMAND = 6
+    NOT_STARTED = 1
+    ACTIVE = 2
+    PAUSED = 3
+    CLOSED_BY_LOOT = 4
+    CLOSED_BY_EARLY_LOOT = 5
+    CLOSED_BY_GAME_OVER = 6
+    CLOSED_BY_COMMAND = 7
 
 
 class Roulette:
@@ -43,7 +44,7 @@ class Roulette:
         self.ball_number = 1
         self._roulette_config: RouletteConfig = roulette_config
         self._strategy = strategy
-        self.status = RouletteStatus.ACTIVE
+        self.status = RouletteStatus.NOT_STARTED
         self.executors = []
         self.realized_net_pnl = Decimal("0")
         self.unrealized_net_pnl = Decimal("0")
@@ -53,6 +54,7 @@ class Roulette:
         self.canceled_by_time_limit = 0
         self.closed_by_loot = 0
         self.signal = 0
+        self.signal_resume = ''
         self.std = Decimal("0")
         self.std_mean = Decimal("0")
         safe_ensure_future(self.control_loop())
@@ -115,23 +117,27 @@ class Roulette:
     def update_status(self):
         realized_net_pnl = 0
         unrealized_net_pnl = 0
-        self.signal, self.std, self.std_mean = self._strategy.get_signal_std(self._roulette_config.trading_pair)
+        self.signal, self.std, self.std_mean, self.signal_resume = self._strategy.get_signal_std(self._roulette_config.trading_pair)
         for executor in reversed(self.executors):
+            if self.status == RouletteStatus.NOT_STARTED:
+                if executor.status == PositionExecutorStatus.ACTIVE_POSITION:
+                    self.status = RouletteStatus.ACTIVE
             if executor.status == PositionExecutorStatus.ACTIVE_POSITION:
                 unrealized_net_pnl += executor.pnl_usd - executor.cum_fees
             else:
                 realized_net_pnl += executor.pnl_usd - executor.cum_fees
             if executor.status == PositionExecutorStatus.CLOSED_BY_TAKE_PROFIT:
                 self.status = RouletteStatus.CLOSED_BY_LOOT
+
         if not self.has_active_executors:
-            if -1 * realized_net_pnl > self.game_over_usd:
+            if self.status == RouletteStatus.CLOSED_BY_LOOT:
+                self._strategy.notify_hb_app_with_timestamp(f"{self._roulette_config.trading_pair} | Roulette {self.roulette_id} closed by loot! {realized_net_pnl:.4f}")
+            elif -1 * realized_net_pnl > self.game_over_usd:
                 self.status = RouletteStatus.CLOSED_BY_GAME_OVER
-                self._strategy.notify_hb_app_with_timestamp(f"{self._roulette_config.trading_pair} | Roulette {self.roulette_id} closed by game over! Max loss reached... {realized_net_pnl}")
-            elif self.status == RouletteStatus.CLOSED_BY_LOOT:
-                self._strategy.notify_hb_app_with_timestamp(f"{self._roulette_config.trading_pair} | Roulette {self.roulette_id} closed by loot! {realized_net_pnl}")
+                self._strategy.notify_hb_app_with_timestamp(f"{self._roulette_config.trading_pair} | Roulette {self.roulette_id} closed by game over! Max loss reached... {realized_net_pnl:.4f}")
             elif realized_net_pnl > 0:
                 self.status = RouletteStatus.CLOSED_BY_EARLY_LOOT
-                self._strategy.notify_hb_app_with_timestamp(f"{self._roulette_config.trading_pair} | Roulette {self.roulette_id} closed by early Loot! {realized_net_pnl}")
+                self._strategy.notify_hb_app_with_timestamp(f"{self._roulette_config.trading_pair} | Roulette {self.roulette_id} closed by early Loot! {realized_net_pnl:.4f}")
 
         self.realized_net_pnl = realized_net_pnl
         self.unrealized_net_pnl = unrealized_net_pnl

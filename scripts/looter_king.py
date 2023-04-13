@@ -53,7 +53,7 @@ class LooterKing(ScriptStrategyBase):
             open_order_refresh_analyze_time=30,
             open_order_buffer_price=Decimal("0.00001"),
             max_balls=7,
-            initial_order_amount=Decimal("10.0"),
+            initial_order_amount=Decimal("15.0"),
             leverage=get_leverage_by_trading_pair(trading_pair=trading_pair)),
             active_roulettes=[],
             stored_roulettes=[],
@@ -123,47 +123,83 @@ class LooterKing(ScriptStrategyBase):
             if not roulette_info['cashing_out']:
                 self.logger().info(f"Cashing out for {trading_pair}!")
                 roulette_info['cashing_out'] = True
+    
+    def get_rising(series: pd.Series(),
+           n_periods=1):
+        return series > series.shift(n_periods)
 
-    def get_signal_std(self, trading_pair):
+    def get_falling(series: pd.Series(),
+           n_periods=1):
+        return series < series.shift(n_periods)
+
+    def get_signal_std(self, trading_pair):       
         candles = self.roulette_by_trading_pair[trading_pair]["candles_3m"]
         candles_df = candles.candles_df
         # Let's add some technical indicators
         candles_df.ta.bbands(length=100, append=True)
-        candles_df.ta.macd(fast=21, slow=42, signal=9, append=True)
         candles_df["std"] = candles_df["close"].rolling(100).std()
         candles_df["mean"] = candles_df["close"].rolling(100).mean()
         candles_df["std_close"] = candles_df["std"] / candles_df["close"]
         last_candle = candles_df.iloc[-1]
         bbp = last_candle["BBP_100_2.0"]
-        macdh = last_candle["MACDh_21_42_9"]
-        macd = last_candle["MACD_21_42_9"]
         std_pct = last_candle["std_close"]
+        
         candles_1m = self.roulette_by_trading_pair[trading_pair]["candles_1m"]
         candles_1m_df = candles_1m.candles_df
         candles_1m_df.ta.bbands(length=100, append=True)
-        candles_1m_df.ta.macd(fast=21, slow=42, signal=9, append=True)
+        candles_1m_df.ta.macd(fast=12, slow=26, signal=9, append=True)
         candles_1m_df["std"] = candles_1m_df["close"].rolling(100).std()
         candles_1m_df["mean"] = candles_1m_df["close"].rolling(100).mean()
         candles_1m_df["std_close"] = candles_1m_df["std"] / candles_1m_df["close"]
-        std_mean = candles_1m_df["std_close"].mean()
-        last_candle = candles_1m_df.iloc[-1]
-        bbp = last_candle["BBP_100_2.0"]
-        max_bbands_width = (candles_1m_df['BBU_100_2.0'] - candles_1m_df['BBL_100_2.0']).max()
-        actual_bbands_width = (last_candle['BBU_100_2.0'] - last_candle['BBL_100_2.0']).mean()
-        bbands_perc = actual_bbands_width / max_bbands_width
-        bbp_1m = last_candle["BBP_100_2.0"]
-        macdh_1m = last_candle["MACDh_21_42_9"]
-        macd_1m = last_candle["MACD_21_42_9"]
-        std_pct_1m = last_candle["std_close"]
+        candles_1m_df['macdh_rising'] = self.get_rising(candles_1m_df['MACDh_12_26_9'])
+        candles_1m_df['macdh_falling'] = self.get_falling(candles_1m_df['MACDh_12_26_9'])
 
-        if bbp < 0.25 and macdh_1m > 0 and bbands_perc >= 0.5:
+        std_mean = candles_1m_df["std_close"].mean()
+        last_candle_1m = candles_1m_df.iloc[-1]
+        bbp_1m = last_candle_1m["BBP_100_2.0"]
+        max_bbands_width = (candles_1m_df['BBU_100_2.0'] - candles_1m_df['BBL_100_2.0']).max()
+        actual_bbands_width = (last_candle_1m['BBU_100_2.0'] - last_candle_1m['BBL_100_2.0']).mean()
+        bbands_perc = actual_bbands_width / max_bbands_width
+        macd_1m = last_candle_1m["MACD_12_26_9"]
+        macdh_rising_1m = last_candle_1m["macdh_rising"]
+        macdh_falling_1m = last_candle_1m["macdh_falling"]
+        macd_signal_1m = last_candle_1m["MACDs_12_26_9"]
+        macdh_1m = last_candle_1m["MACDh_12_26_9"]
+
+        std_pct_1m = last_candle_1m["std_close"]
+
+        if bbp < 0.25  and bbands_perc >= 0.5 and (macdh_1m>0 or macdh_rising_1m):
             signal_value = 1
-        elif bbp > 0.75 and macdh_1m < 0 and bbands_perc >= 0.5:
+        elif bbp > 0.75 and bbands_perc >= 0.5 and (macdh_1m<0 or macdh_falling_1m):
             signal_value = -1
         else:
             signal_value = 0
-        return signal_value, Decimal(str(min(std_pct_1m, std_pct))), Decimal(str(std_mean))
+        signal_resume = ''
+        if bbp < 0.25:
+            signal_resume += f'|BB%:{bbp:.2f}:LONG'
+        elif bbp > 0.75:
+            signal_resume += f'|BB%:{bbp:.2f}:SHORT'
+        else:
+            signal_resume += f'|BB%:{bbp:.2f}:NO'
 
+        if macdh_1m >0:
+            signal_resume += '|MACDh:POS'
+        else:
+            signal_resume += '|MACDh:NEG'
+
+        if macdh_rising_1m:
+            signal_resume += ':GOING UP'
+        if macdh_falling_1m:
+            signal_resume += ':GOING DOWN'
+
+        if bbands_perc >= 0.5:
+            signal_resume += '|BB:WIDE'
+        else:
+            signal_resume += '|BB:NARROW'
+
+        return signal_value, Decimal(str(min(std_pct_1m, std_pct))), Decimal(str(std_mean)), signal_resume
+
+        
     def format_status(self) -> str:
         """
         Displays the three candlesticks involved in the script with RSI, BBANDS and EMA.
@@ -201,14 +237,14 @@ class LooterKing(ScriptStrategyBase):
                     game_over_roulettes += 1
                 elif roulette.status == RouletteStatus.CLOSED_BY_EARLY_LOOT:
                     early_loot_roulettes += 1
-                elif roulette.status == RouletteStatus.CLOSED_BY_EARLY_LOOT:
+                elif roulette.status == RouletteStatus.CLOSED_BY_LOOT:
                     loot_roulettes += 1
                 closed_by_early_loot += roulette.closed_by_early_loot
                 closed_by_stop_loss += roulette.closed_by_stop_loss
                 closed_by_time_limit += roulette.closed_by_time_limit
                 canceled_by_time_limit += roulette.canceled_by_time_limit
                 closed_by_loot += roulette.closed_by_loot
-                roulette_history_resume += f"|{(roulette.realized_net_pnl + roulette.unrealized_net_pnl):.4f}B{roulette.ball_number}|"
+                roulette_history_resume += f"|{roulette.ball_number}B{(roulette.realized_net_pnl + roulette.unrealized_net_pnl):.4f}"
             unrealized_net_pnl_global += unrealized_net_pnl
             realized_net_pnl_global += realized_net_pnl
             early_loot_roulettes_global += early_loot_roulettes
@@ -231,9 +267,11 @@ class LooterKing(ScriptStrategyBase):
             std = 0
             signal = 0
             runaway = Decimal("0")
+            signal_resume = ''
             if len(roulette_info["active_roulettes"]) > 0:
                 current_roulette = roulette_info["active_roulettes"][-1]
                 signal = current_roulette.signal
+                signal_resume = current_roulette.signal_resume
                 game_over_usd = current_roulette.game_over_usd
                 max_stop_loss = current_roulette._roulette_config.max_stop_loss
                 stop_loss = current_roulette.stop_loss
@@ -244,7 +282,8 @@ class LooterKing(ScriptStrategyBase):
                     active_roulettes_global += 1
                     current_roulette_status = current_roulette.executors[-1].status
                     if len([executor for executor in current_roulette.executors if executor.status != PositionExecutorStatus.CANCELED_BY_TIME_LIMIT]) > 0:
-                        active_roulettes_resume += f"|{trading_pair.split('-')[0]}{(current_roulette.realized_net_pnl + current_roulette.unrealized_net_pnl):.4f}B{current_roulette.ball_number}|"
+                        active_roulettes_resume += f"|{trading_pair.split('-')[0]}{(current_roulette.realized_net_pnl + current_roulette.unrealized_net_pnl + current_roulette.unrealized_net_pnl):.4f}B{current_roulette.ball_number}|"
+                        roulete_status_report += "| N°B" + str(current_roulette.ball_number)
                     if current_roulette_status == PositionExecutorStatus.ORDER_PLACED:
                         roulete_status_report = "ORDER PLACED"
                         balls_waiting_enter_global += 1
@@ -253,26 +292,21 @@ class LooterKing(ScriptStrategyBase):
                         balls_paying_global += 1
                         current_price = self.connectors[self.exchange].get_mid_price(trading_pair)
                         runaway += - self.taker_fee*current_roulette.executors[-1].amount*Decimal(current_price)
-                    roulete_status_report += "|" + str(current_roulette.ball_number)
                 runaway_global += runaway
             lines.extend([f"""
 |{trading_pair}| {mkt_activity_status} | {roulete_status_report} |
 |Net realized PNL: {realized_net_pnl:.4f} USD
-|Net unrealized PNL: {unrealized_net_pnl:.4f}
-|Game over USD: {game_over_usd:.4f}
-|Runaway: {runaway:.4f}
+|Net unrealized PNL: {unrealized_net_pnl:.4f} USD
+|Game over: {game_over_usd:.4f} USD
+|Runaway: {runaway:.4f} USD
 |Signal: {signal}
-|Stop Loss: {stop_loss:.4f}
-|Take Profit: {take_profit:.4f}
-|STD Mean: {std:.4f}
-|Loots: {closed_by_loot}
-|Early loots: {closed_by_early_loot}
-|Stop Loss: {closed_by_stop_loss}
-|Time Limit: {closed_by_time_limit}
-|Expired: {canceled_by_time_limit}
+|SL: {stop_loss:.4f}|TP:{take_profit:.4f}|STD M:{std:.4f}|
+{signal_resume}
 |--*ROULETTE HISTORY*--
-|WON{loot_roulettes}|EL{early_loot_roulettes}|GO{game_over_roulettes} 
+|WON:{loot_roulettes}|E.L.:{early_loot_roulettes}|G.O:{game_over_roulettes}|
 {roulette_history_resume}
+|--*BALL HISTORY*--
+|{closed_by_loot}L|{closed_by_early_loot}EL|{closed_by_stop_loss}SL|{closed_by_time_limit}TL|{canceled_by_time_limit}EX|
 """])
             info_by_closed_roulette = []
             for roulette in roulette_info["stored_roulettes"]:
@@ -291,11 +325,22 @@ WON{loot_roulettes_global}|EL{early_loot_roulettes_global}|GO{game_over_roulette
 --*ACTIVE BALLS*--
 Playing: {balls_paying_global} - Order placed:{balls_waiting_enter_global}
 """])
+        remaining_time_txt = ''
+        life_seconds = roulette_info['trading_cash_out_time'] * 24 * 60 * 60
+        if self.current_timestamp - self.start_time >= life_seconds:
+            remaining_time_txt = "CASH OUT TRIGGERED"
+        else:
+            remaining_time_txt = f"Cash-out {self.current_timestamp - self.start_time - life_seconds} seg"
+        lines.append(f"\n### TIME FOR CASHOUT ###")
+        lines.append(remaining_time_txt)
         return "\n".join(lines)
 
     def clean_and_store_roulettes(self):
         for trading_pair, roulette_info in self.roulette_by_trading_pair.items():
-            roulettes_to_store = [roulette for roulette in roulette_info["active_roulettes"] if roulette.is_closed()]
+            roulettes_to_store = []
+            roulettes_to_store.extend([roulette for roulette in roulette_info["active_roulettes"] if roulette.is_closed()])
+            if roulette_info['cashing_out']:
+                roulletes_to_store.extend([roulette for roulette in roulette_info["active_roulettes"] if roulette.status == RouletteStatus.NOT_STARTED])
             if not os.path.exists(roulette_info["csv_path"]):
                 df_header = pd.DataFrame([("timestamp",
                                            "roulette_group_id",
