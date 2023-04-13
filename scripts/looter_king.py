@@ -124,11 +124,11 @@ class LooterKing(ScriptStrategyBase):
                 self.logger().info(f"Cashing out for {trading_pair}!")
                 roulette_info['cashing_out'] = True
     
-    def get_rising(series: pd.Series(),
+    def get_rising(self, series: pd.Series(),
            n_periods=1):
         return series > series.shift(n_periods)
 
-    def get_falling(series: pd.Series(),
+    def get_falling(self, series: pd.Series(),
            n_periods=1):
         return series < series.shift(n_periods)
 
@@ -140,10 +140,14 @@ class LooterKing(ScriptStrategyBase):
         candles_df["std"] = candles_df["close"].rolling(100).std()
         candles_df["mean"] = candles_df["close"].rolling(100).mean()
         candles_df["std_close"] = candles_df["std"] / candles_df["close"]
+        candles_df['macdh_rising'] = self.get_rising(candles_df['MACDh_12_26_9'])
+        candles_df['macdh_falling'] = self.get_falling(candles_df['MACDh_12_26_9'])
         last_candle = candles_df.iloc[-1]
         bbp = last_candle["BBP_100_2.0"]
         std_pct = last_candle["std_close"]
-        
+        macdh_rising_3m = last_candle["macdh_rising"]
+        macdh_falling_3m = last_candle["macdh_falling"]
+
         candles_1m = self.roulette_by_trading_pair[trading_pair]["candles_1m"]
         candles_1m_df = candles_1m.candles_df
         candles_1m_df.ta.bbands(length=100, append=True)
@@ -151,8 +155,7 @@ class LooterKing(ScriptStrategyBase):
         candles_1m_df["std"] = candles_1m_df["close"].rolling(100).std()
         candles_1m_df["mean"] = candles_1m_df["close"].rolling(100).mean()
         candles_1m_df["std_close"] = candles_1m_df["std"] / candles_1m_df["close"]
-        candles_1m_df['macdh_rising'] = self.get_rising(candles_1m_df['MACDh_12_26_9'])
-        candles_1m_df['macdh_falling'] = self.get_falling(candles_1m_df['MACDh_12_26_9'])
+
 
         std_mean = candles_1m_df["std_close"].mean()
         last_candle_1m = candles_1m_df.iloc[-1]
@@ -161,16 +164,14 @@ class LooterKing(ScriptStrategyBase):
         actual_bbands_width = (last_candle_1m['BBU_100_2.0'] - last_candle_1m['BBL_100_2.0']).mean()
         bbands_perc = actual_bbands_width / max_bbands_width
         macd_1m = last_candle_1m["MACD_12_26_9"]
-        macdh_rising_1m = last_candle_1m["macdh_rising"]
-        macdh_falling_1m = last_candle_1m["macdh_falling"]
         macd_signal_1m = last_candle_1m["MACDs_12_26_9"]
         macdh_1m = last_candle_1m["MACDh_12_26_9"]
 
         std_pct_1m = last_candle_1m["std_close"]
 
-        if bbp < 0.25  and bbands_perc >= 0.5 and (macdh_1m>0 or macdh_rising_1m):
+        if bbp < 0.25  and bbands_perc >= 0.5 and (macdh_1m > 0 or macdh_rising_3m):
             signal_value = 1
-        elif bbp > 0.75 and bbands_perc >= 0.5 and (macdh_1m<0 or macdh_falling_1m):
+        elif bbp > 0.75 and bbands_perc >= 0.5 and (macdh_1m < 0 or macdh_falling_3m):
             signal_value = -1
         else:
             signal_value = 0
@@ -187,9 +188,9 @@ class LooterKing(ScriptStrategyBase):
         else:
             signal_resume += '|MACDh:NEG'
 
-        if macdh_rising_1m:
+        if macdh_rising_3m:
             signal_resume += ':GOING UP'
-        if macdh_falling_1m:
+        if macdh_falling_3m:
             signal_resume += ':GOING DOWN'
 
         if bbands_perc >= 0.5:
