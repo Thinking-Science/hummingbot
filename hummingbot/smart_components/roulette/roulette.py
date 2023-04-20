@@ -160,7 +160,7 @@ class Roulette:
         for i in range(1, self._roulette_config.max_balls + 1, 1):
             take_profit_mean = self.std_mean * self._roulette_config.take_profit_multiplier
             extra_amount = Decimal(str(cum_loss)) / (take_profit_mean - self._strategy.taker_fee - self._strategy.maker_fee)
-            cum_loss += (self._roulette_config.initial_order_amount + extra_amount) * self._roulette_config.max_stop_loss
+            cum_loss += (self._roulette_config.initial_order_amount + extra_amount) * (self._roulette_config.max_stop_loss + self._strategy.taker_fee * 2)
         return cum_loss
 
     @property
