@@ -27,7 +27,7 @@ class LooterKing(ScriptStrategyBase):
     IMPORTANT: Binance perpetual has to be in Single Asset Mode, soon we are going to support Multi Asset Mode.
     """
     # Define the trading pair and exchange that we want to use and the csv where we are going to store the entries
-    trading_pairs = ["DODO-BUSD"]
+    trading_pairs = ["DOGE-BUSD"]
     exchange = "binance_perpetual"
 
     # Fee structure
@@ -45,15 +45,15 @@ class LooterKing(ScriptStrategyBase):
             trading_pair=trading_pair,
             stop_loss_multiplier=Decimal("0.5"),
             take_profit_multiplier=Decimal("1.0"),
-            time_limit=60 * 30,
-            max_stop_loss=Decimal("0.002"),
+            time_limit=60 * 55,
+            max_stop_loss=Decimal("0.003"),
             trailing_stop_loss=False,
             trailing_stop_loss_pct=Decimal("0"),
             open_order_type=OrderType.LIMIT,
             open_order_refresh_analyze_time=30,
             open_order_buffer_price=Decimal("0.00001"),
-            max_balls=7,
-            initial_order_amount=Decimal("15.0"),
+            max_balls=6,
+            initial_order_amount=Decimal("6.0"),
             leverage=get_leverage_by_trading_pair(trading_pair=trading_pair)),
             active_roulettes=[],
             stored_roulettes=[],
@@ -145,20 +145,18 @@ class LooterKing(ScriptStrategyBase):
         # std_pct = last_candle["std_close"]
         # macdh_rising_3m = last_candle["macdh_rising"]
         # macdh_falling_3m = last_candle["macdh_falling"]
-
-        candles_1m = self.roulette_by_trading_pair[trading_pair]["candles_1m"]
-        candles_1m_df = candles_1m.candles_df
-        candles_1m_df.ta.bbands(length=100, append=True)
-        candles_1m_df.ta.macd(fast=12, slow=26, signal=9, append=True)
-        candles_1m_df["std"] = candles_1m_df["close"].rolling(100).std()
-        candles_1m_df["mean"] = candles_1m_df["close"].rolling(100).mean()
-        candles_1m_df["std_close"] = candles_1m_df["std"] / candles_1m_df["close"]
-
-        std_mean = candles_1m_df["std_close"].mean()
-        last_candle_1m = candles_1m_df.iloc[-1]
-        bbp = last_candle_1m["BBP_100_2.0"]
-        std_pct_1m = last_candle_1m["std_close"]
-
+        candles_3m = self.roulette_by_trading_pair[trading_pair]["candles_3m"]
+        candles_3m_df = candles_3m.candles_df
+        candles_3m_df.ta.bbands(length=100, append=True)
+        candles_3m_df.ta.macd(fast=12, slow=26, signal=9, append=True)
+        candles_3m_df["target"] = candles_3m_df["close"].rolling(100).std() / candles_3m_df["close"]
+        candles_3m_df["std_mean"] = ta.ema(candles_3m_df["target"], length=21)
+        std_mean = candles_3m_df["std_mean"].mean()
+        last_candle_3m = candles_3m_df.iloc[-1]
+        bbp = last_candle_3m["BBP_100_2.0"]
+        std_pct = last_candle_3m["target"]
+        macdh = last_candle_3m["MACDh_21_42_9"]
+        macd = last_candle_3m["MACD_21_42_9"]
         # if bbp < 0.25  and bbands_perc >= 0.5 and (macdh_1m > 0 or macdh_rising_3m):
         #     signal_value = 1
         # elif bbp > 0.75 and bbands_perc >= 0.5 and (macdh_1m < 0 or macdh_falling_3m):
@@ -166,18 +164,38 @@ class LooterKing(ScriptStrategyBase):
         # else:
         #     signal_value = 0
         signal_resume = ''
-        if bbp < 0.25:
-            signal_resume += f'|BB%:{bbp:.2f}:LONG'
+        signal_value = 0
+        if bbp < 0.2 and macdh > 0 and macd < 0:
             signal_value = 1
-        elif bbp > 0.75:
-            signal_resume += f'|BB%:{bbp:.2f}:SHORT'
+        if bbp > 0.8 and macdh < 0 and macd > 0:
             signal_value = -1
+        if std_pct <= 0.003:
+            signal_value = 0
+
+        if macdh > 0:
+            signal_resume += f'|MACDH%:{macdh:.2f}:LONG'
+        elif macdh < 0:
+            signal_resume += f'|MACDH%:{macdh:.2f}:SHORT'
+        else:
+            signal_resume += f'|MACDH%:{macdh:.2f}:NO'
+
+        if macd < 0:
+            signal_resume += f'|MACD%:{macdh:.2f}:LONG'
+        elif macd > 0:
+            signal_resume += f'|MACD%:{macdh:.2f}:SHORT'
+        else:
+            signal_resume += f'|MACD%:{macdh:.2f}:NO'
+
+        if bbp < 0.2:
+            signal_resume += f'|BB%:{bbp:.2f}:LONG'
+        elif bbp > 0.8:
+            signal_resume += f'|BB%:{bbp:.2f}:SHORT'
         else:
             signal_resume += f'|BB%:{bbp:.2f}:NO'
-            signal_value = 0
-        if std_pct_1m < 0.002:
-            signal_resume += f'|STD%:{std_pct_1m:.2f}:NO'
-            signal_value = 0
+        if std_pct <= 0.003:
+            signal_resume += f'|STD%:{std_pct:.2f}:OFF'
+        else:
+            signal_resume += f'|STD%:{std_pct:.2f}:ON'
 
         # if macdh_1m >0:
         #     signal_resume += '|MACDh:POS'
@@ -194,7 +212,7 @@ class LooterKing(ScriptStrategyBase):
         # else:
         #     signal_resume += '|BB:NARROW'
 
-        return signal_value, Decimal(str(std_pct_1m)), Decimal(str(std_mean)), signal_resume
+        return signal_value, Decimal(str(std_pct)), Decimal(str(std_mean)), signal_resume
 
     def format_status(self) -> str:
         """
