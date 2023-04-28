@@ -63,10 +63,10 @@ class LooterKing(ScriptStrategyBase):
             candles_1m=CandlesFactory.get_candle(connector=exchange,
                                                  trading_pair=trading_pair,
                                                  interval="1m", max_records=500),
-            trading_cash_out_time=0.25,  # days
+            trading_cash_out_time=1,  # days
             cashing_out=False,
             active_trading=True,
-            max_game_overs=3,
+            max_game_overs=2,
             csv_path=data_path() + f"/roulette_{exchange}_{trading_pair}_{today.day:02d}-{today.month:02d}-{today.year}-{today.hour}.csv",
         )
     short_threshold = -0.5
