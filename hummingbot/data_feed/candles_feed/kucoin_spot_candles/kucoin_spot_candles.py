@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -37,7 +38,7 @@ class KucoinSpotCandles(CandlesBase):
 
     @property
     def wss_url(self):
-        return CONSTANTS.WSS_URL
+        return None
 
     @property
     def health_check_url(self):
@@ -46,6 +47,10 @@ class KucoinSpotCandles(CandlesBase):
     @property
     def candles_url(self):
         return self.rest_url + CONSTANTS.CANDLES_ENDPOINT
+
+    @property
+    def public_ws_url(self):
+        return self.rest_url + CONSTANTS.PUBLIC_WS_DATA_PATH_URL
 
     @property
     def rate_limits(self):
@@ -67,33 +72,34 @@ class KucoinSpotCandles(CandlesBase):
     async def fetch_candles(self,
                             start_time: Optional[int] = None,
                             end_time: Optional[int] = None,
-                            limit: Optional[int] = 500):
+                            limit: Optional[int] = 1500):
         rest_assistant = await self._api_factory.get_rest_assistant()
-        params = {"symbol": self._ex_trading_pair, "interval": self.interval, "limit": limit}
+        params = {"symbol": self._ex_trading_pair, "type": CONSTANTS.INTERVALS[self.interval], "limit": 1500}
         if start_time:
-            params["startTime"] = start_time
+            params["startAt"] = start_time
         if end_time:
-            params["endTime"] = end_time
+            params["endAt"] = end_time
         candles = await rest_assistant.execute_request(url=self.candles_url,
                                                        throttler_limit_id=CONSTANTS.CANDLES_ENDPOINT,
                                                        params=params)
 
-        return np.array(candles)[:, [0, 1, 2, 3, 4, 5, 7, 8, 9, 10]].astype(float)
+        return np.array(candles["data"]).astype(float)
 
     async def fill_historical_candles(self):
-        max_request_needed = (self._candles.maxlen // 1000) + 1
+        max_request_needed = (self._candles.maxlen // 1500) + 10
         requests_executed = 0
         while not self.is_ready:
-            missing_records = self._candles.maxlen - len(self._candles)
-            end_timestamp = int(self._candles[0][0])
+            # missing_records = self._candles.maxlen - len(self._candles)
             try:
                 if requests_executed < max_request_needed:
+                    end_timestamp = int(self._candles[0][0])
                     # we have to add one more since, the last row is not going to be included
-                    candles = await self.fetch_candles(end_time=end_timestamp, limit=missing_records + 1)
+                    start_time = end_timestamp - (1500 * self.get_seconds_from_interval(self.interval)) + 1
+                    candles = await self.fetch_candles(end_time=end_timestamp, start_time=start_time)
                     # we are computing agaefin the quantity of records again since the websocket process is able to
                     # modify the deque and if we extend it, the new observations are going to be dropped.
                     missing_records = self._candles.maxlen - len(self._candles)
-                    self._candles.extendleft(candles[-(missing_records + 1):-1][::-1])
+                    self._candles.extendleft(candles[-(missing_records + 1):-1])
                     requests_executed += 1
                 else:
                     self.logger().error(f"There is no data available for the quantity of "
@@ -116,7 +122,7 @@ class KucoinSpotCandles(CandlesBase):
             payload = {
                 "id": str(get_tracking_nonce()),
                 "type": "subscribe",
-                "topic": f"/market/candles:{self._ex_trading_pair}_{self.interval}",
+                "topic": f"/market/candles:{self._ex_trading_pair}_{CONSTANTS.INTERVALS[self.interval]}",
                 "privateChannel": False,
                 "response": False,
             }
@@ -137,7 +143,7 @@ class KucoinSpotCandles(CandlesBase):
         while True:
             try:
                 seconds_until_next_ping = self._ping_interval - (self._time() - self._last_ws_message_sent_timestamp)
-                await asyncio.wait_for(super()._process_websocket_messages_from_candles(websocket_assistant=websocket_assistant),
+                await asyncio.wait_for(self._process_websocket_messages_from_candles(websocket_assistant=websocket_assistant),
                                        timeout=seconds_until_next_ping)
             except asyncio.TimeoutError:
                 payload = {
@@ -152,37 +158,34 @@ class KucoinSpotCandles(CandlesBase):
         async for ws_response in websocket_assistant.iter_messages():
             data: Dict[str, Any] = ws_response.data
             if data is not None and data.get(
-                    "e") == "kline":  # data will be None when the websocket is disconnected
-                timestamp = data["k"]["t"]
-                open = data["k"]["o"]
-                high = data["k"]["h"]
-                low = data["k"]["l"]
-                close = data["k"]["c"]
-                volume = data["k"]["v"]
-                quote_asset_volume = data["k"]["q"]
-                n_trades = data["k"]["n"]
-                taker_buy_base_volume = data["k"]["V"]
-                taker_buy_quote_volume = data["k"]["Q"]
+                    "subject") == "trade.candles.update":  # data will be None when the websocket is disconnected
+                candles = data["data"]["candles"]
+                timestamp = float(candles[0])
+                open = candles[1]
+                high = candles[2]
+                low = candles[3]
+                close = candles[4]
+                volume = candles[5]
+                quote_asset_volume = candles[6]
+                n_trades = 0.
+                taker_buy_base_volume = 0.
+                taker_buy_quote_volume = 0.
+                candles_array = np.array([timestamp, open, high, low, close, volume, quote_asset_volume, n_trades,
+                                          taker_buy_base_volume, taker_buy_quote_volume]).astype(float)
                 if len(self._candles) == 0:
-                    self._candles.append(np.array([timestamp, open, high, low, close, volume,
-                                                   quote_asset_volume, n_trades, taker_buy_base_volume,
-                                                   taker_buy_quote_volume]))
+                    self._candles.append(candles_array)
                     safe_ensure_future(self.fill_historical_candles())
                 elif timestamp > int(self._candles[-1][0]):
                     # TODO: validate also that the diff of timestamp == interval (issue with 1M interval).
-                    self._candles.append(np.array([timestamp, open, high, low, close, volume,
-                                                   quote_asset_volume, n_trades, taker_buy_base_volume,
-                                                   taker_buy_quote_volume]))
+                    self._candles.append(candles_array)
                 elif timestamp == int(self._candles[-1][0]):
                     self._candles.pop()
-                    self._candles.append(np.array([timestamp, open, high, low, close, volume,
-                                                   quote_asset_volume, n_trades, taker_buy_base_volume,
-                                                   taker_buy_quote_volume]))
+                    self._candles.append(candles_array)
 
     async def _connected_websocket_assistant(self) -> WSAssistant:
         rest_assistant = await self._api_factory.get_rest_assistant()
         connection_info = await rest_assistant.execute_request(
-            url=CONSTANTS.PUBLIC_WS_DATA_PATH_URL,
+            url=self.public_ws_url,
             method=RESTMethod.POST,
             throttler_limit_id=CONSTANTS.PUBLIC_WS_DATA_PATH_URL,
         )
@@ -194,3 +197,6 @@ class KucoinSpotCandles(CandlesBase):
         ws: WSAssistant = await self._api_factory.get_ws_assistant()
         await ws.connect(ws_url=f"{ws_url}?token={token}", message_timeout=self._ping_interval)
         return ws
+
+    def _time(self):
+        return time.time()

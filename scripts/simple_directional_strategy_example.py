@@ -36,9 +36,9 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
     time_limit = 60 * 5
 
     # Create the candles that we want to use and the thresholds for the indicators
-    eth_1m_candles = CandlesFactory.get_candle(connector=exchange,
+    eth_1m_candles = CandlesFactory.get_candle(connector="kucoin",
                                                trading_pair=trading_pair,
-                                               interval="1m", max_records=50)
+                                               interval="1m", max_records=5000)
     rsi_lower_bound = 30
     rsi_upper_bound = 70
 
@@ -65,7 +65,7 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
 
     def on_tick(self):
         self.check_and_set_leverage()
-        if len(self.get_active_executors()) < self.max_executors:
+        if len(self.get_active_executors()) < self.max_executors and self.eth_1m_candles.is_ready:
             signal_value = self.get_signal()
             if signal_value > self.rsi_upper_bound or signal_value < self.rsi_lower_bound and self.is_margin_enough()\
                     and self.eth_1m_candles.is_ready:
@@ -137,7 +137,7 @@ class SimpleDirectionalStrategyExample(ScriptStrategyBase):
             candles_df = self.eth_1m_candles.candles_df
             # Let's add some technical indicators
             candles_df.ta.rsi(length=21, append=True)
-            candles_df["timestamp"] = pd.to_datetime(candles_df["timestamp"], unit="ms")
+            candles_df["timestamp"] = pd.to_datetime(candles_df["timestamp"], unit="s")
             lines.extend([f"Candles: {self.eth_1m_candles.name} | Interval: {self.eth_1m_candles.interval}\n"])
             lines.extend(["    " + line for line in candles_df[columns_to_show].tail().to_string(index=False).split("\n")])
             lines.extend(["\n-----------------------------------------------------------------------------------------------------------\n"])
