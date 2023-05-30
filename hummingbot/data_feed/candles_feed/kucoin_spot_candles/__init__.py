@@ -1,3 +1,3 @@
-from hummingbot.data_feed.candles_feed.binance_spot_candles.binance_spot_candles import BinanceSpotCandles
+from hummingbot.data_feed.candles_feed.kucoin_spot_candles.kucoin_spot_candles import KucoinSpotCandles
 
-__all__ = ["BinanceSpotCandles"]
+__all__ = ["KucoinSpotCandles"]

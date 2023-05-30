@@ -74,7 +74,7 @@ class KucoinSpotCandles(CandlesBase):
                             end_time: Optional[int] = None,
                             limit: Optional[int] = 1500):
         rest_assistant = await self._api_factory.get_rest_assistant()
-        params = {"symbol": self._ex_trading_pair, "type": CONSTANTS.INTERVALS[self.interval], "limit": 1500}
+        params = {"symbol": self._ex_trading_pair, "type": CONSTANTS.INTERVALS[self.interval]}
         if start_time:
             params["startAt"] = start_time
         if end_time:
